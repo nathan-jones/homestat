@@ -84,12 +84,24 @@ pub async fn serve(hub: Arc<Hub>, port: u16) -> Result<()> {
     }
 }
 
+/// Unregisters a connection from the dashboard's list when it ends.
+struct ConnGuard<'a>(&'a Hub, u64);
+
+impl Drop for ConnGuard<'_> {
+    fn drop(&mut self) {
+        self.0.conn_closed(self.1);
+    }
+}
+
 async fn handle_conn(hub: Arc<Hub>, mut stream: TcpStream) -> Result<()> {
     stream.set_nodelay(true)?;
-    let scope_id = match stream.peer_addr()? {
+    let peer = stream.peer_addr()?;
+    let scope_id = match peer {
         SocketAddr::V6(a) => a.scope_id(),
         SocketAddr::V4(_) => 0,
     };
+    let guard = ConnGuard(&hub, hub.conn_opened(peer.ip().to_canonical()));
+    let mut pairing_changes = hub.pairing_changes();
     let link = Link { local_ip: stream.local_addr()?.ip().to_canonical(), scope_id };
     let mut conn = ConnState::default();
     let mut session: Option<Session> = None;
@@ -97,7 +109,20 @@ async fn handle_conn(hub: Arc<Hub>, mut stream: TcpStream) -> Result<()> {
     let mut plain = Vec::new();
     let mut buf = vec![0u8; 8192];
     loop {
-        let n = stream.read(&mut buf).await?;
+        let n = tokio::select! {
+            r = stream.read(&mut buf) => r?,
+            changed = pairing_changes.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                // Removed controllers (or a reset) must not keep a session.
+                if conn.controller.as_deref().is_some_and(|c| hub.pairing(c).is_none()) {
+                    tracing::info!(%peer, "closing session of a removed pairing");
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         if n == 0 {
             return Ok(());
         }
@@ -129,6 +154,9 @@ async fn handle_conn(hub: Arc<Hub>, mut stream: TcpStream) -> Result<()> {
                 raw.append(&mut plain);
                 plain = s.decrypt(&mut raw)?;
                 session = Some(s);
+                if let Some(c) = &conn.controller {
+                    hub.conn_verified(guard.1, c);
+                }
             }
         }
     }

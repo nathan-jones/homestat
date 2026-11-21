@@ -1,6 +1,7 @@
 //! Widget definitions. A widget = a data source + a visual style; each one is
 //! exposed to HomeKit as its own camera.
 
+pub mod remote;
 pub mod render;
 pub mod sources;
 
@@ -37,6 +38,29 @@ pub enum Source {
     System { metric: SystemMetric },
     /// Random walk, handy for demos.
     Demo,
+    /// A Home Assistant entity's state (or one of its attributes).
+    #[serde(rename = "homeassistant")]
+    HomeAssistant {
+        entity_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attribute: Option<String>,
+    },
+    /// A PromQL instant query that returns a single series.
+    Prometheus { query: String },
+    /// Numeric MQTT payloads, optionally picked out of JSON with a dotted path
+    /// (`sensor.temperature`, `values.0`).
+    Mqtt {
+        topic: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        json_path: Option<String>,
+    },
+}
+
+impl Source {
+    /// Sources whose values arrive from outside and are held between samples.
+    pub fn is_remote(&self) -> bool {
+        matches!(self, Source::HomeAssistant { .. } | Source::Prometheus { .. } | Source::Mqtt { .. })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -89,6 +113,8 @@ impl NewWidget {
 pub struct WidgetSnapshot {
     pub def: WidgetDef,
     pub samples: Vec<f64>,
+    /// Problem with the data source (shown on the widget), if any.
+    pub status: Option<String>,
     /// Bumped on every new sample; streams re-render only when it changes.
     pub version: u64,
 }

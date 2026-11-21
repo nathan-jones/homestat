@@ -1,68 +1,198 @@
-//! Admin HTTP API for managing widgets (separate from the HAP port).
+//! Admin HTTP API and web UI (separate from the HAP port).
+//!
+//! All URLs in the UI are relative so it also works behind Home Assistant
+//! ingress, which serves it under `/api/hassio_ingress/<token>/`.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::hub::Hub;
-use crate::widgets::{render, NewWidget};
+use crate::widgets::{render, NewWidget, Source};
 
-pub async fn serve(hub: Arc<Hub>, port: u16) -> anyhow::Result<()> {
+/// Which remote sources have connection settings (shown in the UI).
+#[derive(Serialize, Clone, Copy)]
+pub struct Configured {
+    pub home_assistant: bool,
+    pub prometheus: bool,
+    pub mqtt: bool,
+}
+
+#[derive(Clone)]
+struct AppState {
+    hub: Arc<Hub>,
+    configured: Configured,
+}
+
+pub async fn serve(hub: Arc<Hub>, port: u16, allow: Vec<IpAddr>, configured: Configured) -> anyhow::Result<()> {
+    let allow = Arc::new(allow);
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/status", get(status))
         .route("/api/pairing", get(pairing))
+        .route("/api/pairing/reset", post(reset_pairing))
+        .route("/api/pairing/qr.svg", get(pairing_qr))
         .route("/api/widgets", get(list).post(create))
-        .route("/api/widgets/{id}", delete(remove))
+        .route("/api/widgets/{id}", get(get_one).put(update).delete(remove))
         .route("/api/widgets/{id}/value", post(push))
         .route("/api/widgets/{id}/preview.png", get(preview))
-        .with_state(hub);
+        .layer(middleware::from_fn(move |ci, req, next| allowlist(allow.clone(), ci, req, next)))
+        .with_state(AppState { hub, configured });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!("admin API on http://localhost:{port}");
-    axum::serve(listener, app).await?;
+    tracing::info!("web UI on http://localhost:{port}");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+async fn allowlist(
+    allow: Arc<Vec<IpAddr>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if allow.is_empty() || ip.is_loopback() || allow.contains(&ip) {
+        next.run(req).await
+    } else {
+        tracing::debug!(%ip, "admin API request refused");
+        StatusCode::FORBIDDEN.into_response()
+    }
 }
 
 fn err(status: StatusCode, msg: impl ToString) -> Response {
     (status, Json(json!({ "error": msg.to_string() }))).into_response()
 }
 
-async fn pairing(State(hub): State<Arc<Hub>>) -> Json<serde_json::Value> {
+async fn status(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let hub = &st.hub;
     Json(json!({
+        "name": hub.name,
         "paired": hub.is_paired(),
         "setup_code": hub.setup_code(),
         "setup_uri": hub.setup_uri(),
+        "sources": st.configured,
     }))
 }
 
-async fn list(State(hub): State<Arc<Hub>>) -> Json<serde_json::Value> {
-    let latest = hub.latest_values();
-    let widgets: Vec<_> = hub
-        .widgets()
-        .into_iter()
-        .map(|w| {
-            let mut v = serde_json::to_value(&w).unwrap();
-            v["value"] = json!(latest.get(&w.id));
-            v
+/// HomeKit pairing state: setup code, paired controllers and which of them
+/// are connected right now.
+async fn pairing(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let hub = &st.hub;
+    let conns = hub.connections();
+    let since = |c: &crate::hub::LiveConn| c.since.elapsed().as_secs();
+    let pairings: Vec<_> = hub
+        .pairings()
+        .iter()
+        .map(|p| {
+            let live: Vec<_> = conns
+                .iter()
+                .filter(|c| c.controller.as_deref() == Some(p.id.as_str()))
+                .map(|c| json!({ "ip": c.peer.to_string(), "connected_secs": since(c) }))
+                .collect();
+            json!({ "id": p.id, "admin": p.admin, "connections": live })
         })
         .collect();
+    Json(json!({
+        "paired": hub.is_paired(),
+        "device_id": hub.device_id(),
+        "setup_code": hub.setup_code(),
+        "setup_uri": hub.setup_uri(),
+        "pairings": pairings,
+        "unverified_connections": conns.iter().filter(|c| c.controller.is_none()).count(),
+    }))
+}
+
+async fn reset_pairing(State(st): State<AppState>) -> Response {
+    match st.hub.reset_pairing() {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn pairing_qr(State(st): State<AppState>) -> Response {
+    match qrcode::QrCode::new(st.hub.setup_uri().as_bytes()) {
+        Ok(code) => {
+            let svg = code
+                .render::<qrcode::render::svg::Color>()
+                .min_dimensions(200, 200)
+                .quiet_zone(true)
+                .build();
+            ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "no-store")], svg).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+fn widget_json(hub: &Hub, w: &crate::widgets::WidgetDef, latest: Option<f64>) -> serde_json::Value {
+    let mut v = serde_json::to_value(w).unwrap();
+    v["value"] = json!(latest);
+    v["status"] = json!(hub.source_status(&w.id));
+    v
+}
+
+async fn list(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let latest = st.hub.latest_values();
+    let widgets: Vec<_> =
+        st.hub.widgets().iter().map(|w| widget_json(&st.hub, w, latest.get(&w.id).copied())).collect();
     Json(json!(widgets))
 }
 
-async fn create(State(hub): State<Arc<Hub>>, Json(req): Json<NewWidget>) -> Response {
-    match hub.add_widget(req) {
+async fn get_one(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    match st.hub.widgets().iter().find(|w| w.id == id) {
+        Some(w) => Json(widget_json(&st.hub, w, st.hub.latest_values().get(&id).copied())).into_response(),
+        None => err(StatusCode::NOT_FOUND, "no such widget"),
+    }
+}
+
+/// Catches obviously broken sources before they become a camera.
+fn validate(req: &NewWidget) -> Result<(), String> {
+    if req.name.trim().is_empty() {
+        return Err("name is required".into());
+    }
+    let empty = |s: &str| s.trim().is_empty();
+    match &req.source {
+        Source::HomeAssistant { entity_id, .. } if !entity_id.contains('.') => {
+            Err("entity_id must look like sensor.living_room_temperature".into())
+        }
+        Source::Prometheus { query } if empty(query) => Err("query is required".into()),
+        Source::Mqtt { topic, .. } if empty(topic) || !rumqttc::valid_filter(topic) => {
+            Err("topic must be a valid MQTT topic filter".into())
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn create(State(st): State<AppState>, Json(req): Json<NewWidget>) -> Response {
+    if let Err(e) = validate(&req) {
+        return err(StatusCode::BAD_REQUEST, e);
+    }
+    match st.hub.add_widget(req) {
         Ok(def) => (StatusCode::CREATED, Json(def)).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, e),
     }
 }
 
-async fn remove(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Response {
-    match hub.remove_widget(&id) {
+async fn update(State(st): State<AppState>, Path(id): Path<String>, Json(req): Json<NewWidget>) -> Response {
+    if let Err(e) = validate(&req) {
+        return err(StatusCode::BAD_REQUEST, e);
+    }
+    match st.hub.update_widget(&id, req) {
+        Ok(Some(def)) => Json(def).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, "no such widget"),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    match st.hub.remove_widget(&id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => err(StatusCode::NOT_FOUND, "no such widget"),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
@@ -74,8 +204,8 @@ struct PushValue {
     value: f64,
 }
 
-async fn push(State(hub): State<Arc<Hub>>, Path(id): Path<String>, Json(body): Json<PushValue>) -> Response {
-    if hub.push_value(&id, body.value) {
+async fn push(State(st): State<AppState>, Path(id): Path<String>, Json(body): Json<PushValue>) -> Response {
+    if st.hub.push_value(&id, body.value) {
         StatusCode::NO_CONTENT.into_response()
     } else {
         err(StatusCode::NOT_FOUND, "no such widget (or value not finite)")
@@ -88,8 +218,8 @@ struct Size {
     height: Option<u32>,
 }
 
-async fn preview(State(hub): State<Arc<Hub>>, Path(id): Path<String>, Query(size): Query<Size>) -> Response {
-    let Some(snap) = hub.snapshot(&id) else {
+async fn preview(State(st): State<AppState>, Path(id): Path<String>, Query(size): Query<Size>) -> Response {
+    let Some(snap) = st.hub.snapshot(&id) else {
         return err(StatusCode::NOT_FOUND, "no such widget");
     };
     let (w, h) = (size.width.unwrap_or(640).clamp(16, 3840), size.height.unwrap_or(360).clamp(16, 2160));
@@ -99,32 +229,6 @@ async fn preview(State(hub): State<Arc<Hub>>, Path(id): Path<String>, Query(size
     }
 }
 
-async fn index(State(hub): State<Arc<Hub>>) -> Html<String> {
-    let tiles: String = hub
-        .widgets()
-        .iter()
-        .map(|w| {
-            format!(
-                r#"<figure><img data-src="/api/widgets/{id}/preview.png?width=480&height=270" width="480" height="270"><figcaption>{name} &middot; aid {aid} &middot; <code>{id}</code></figcaption></figure>"#,
-                id = w.id,
-                name = html_escape(&w.name),
-                aid = w.aid
-            )
-        })
-        .collect();
-    Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>homestat</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{{background:#111;color:#ccc;font:14px system-ui;margin:16px}}main{{display:flex;flex-wrap:wrap;gap:16px}}
-figure{{margin:0}}img{{max-width:100%;height:auto;display:block;border-radius:6px}}figcaption{{margin-top:4px;color:#888}}</style></head>
-<body><h1>homestat</h1><p>Setup code <b>{code}</b> &middot; {paired}</p><main>{tiles}</main>
-<script>function r(){{document.querySelectorAll('img').forEach(i=>i.src=i.dataset.src+'&t='+Date.now())}}r();setInterval(r,2000)</script>
-</body></html>"#,
-        code = hub.setup_code(),
-        paired = if hub.is_paired() { "paired" } else { "not paired yet" },
-    ))
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+async fn index() -> Html<&'static str> {
+    Html(include_str!("ui.html"))
 }

@@ -47,18 +47,12 @@ impl Store {
             let data: PersistedState = serde_json::from_str(&raw).context("parsing state.json")?;
             return Ok((Store { path, data }, false));
         }
-        let mut rng = rand::thread_rng();
-        let mac: Vec<String> = (0..6).map(|_| format!("{:02X}", rng.r#gen::<u8>())).collect();
+        let identity = Identity::generate();
         let data = PersistedState {
-            device_id: mac.join(":"),
+            device_id: identity.device_id,
             setup_code: setup_code.unwrap_or_else(random_setup_code),
-            setup_id: (0..4)
-                .map(|_| {
-                    let c = rng.gen_range(0..36u8);
-                    (if c < 10 { b'0' + c } else { b'A' + c - 10 }) as char
-                })
-                .collect(),
-            ltsk: hex::encode(rng.r#gen::<[u8; 32]>()),
+            setup_id: identity.setup_id,
+            ltsk: identity.ltsk,
             pairings: vec![],
             config_number: 1,
             next_aid: 2,
@@ -70,11 +64,46 @@ impl Store {
         Ok((store, true))
     }
 
+    /// Factory reset of the HomeKit side: a brand-new accessory identity and
+    /// no pairings. Widgets (and the setup code) are kept.
+    pub fn reset_identity(&mut self) -> Result<()> {
+        let identity = Identity::generate();
+        self.data.device_id = identity.device_id;
+        self.data.setup_id = identity.setup_id;
+        self.data.ltsk = identity.ltsk;
+        self.data.pairings.clear();
+        self.data.config_number = 1;
+        self.save()
+    }
+
     pub fn save(&self) -> Result<()> {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&self.data)?)?;
         std::fs::rename(&tmp, &self.path)?;
         Ok(())
+    }
+}
+
+struct Identity {
+    device_id: String,
+    setup_id: String,
+    ltsk: String,
+}
+
+impl Identity {
+    fn generate() -> Identity {
+        let mut rng = rand::thread_rng();
+        let mac: Vec<String> = (0..6).map(|_| format!("{:02X}", rng.r#gen::<u8>())).collect();
+        Identity {
+            device_id: mac.join(":"),
+            setup_id: (0..4)
+                .map(|_| {
+                    let c = rng.gen_range(0..36u8);
+                    (if c < 10 { b'0' + c } else { b'A' + c - 10 }) as char
+                })
+                .collect(),
+            ltsk: hex::encode(rng.r#gen::<[u8; 32]>()),
+        }
     }
 }
 

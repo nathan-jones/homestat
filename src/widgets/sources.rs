@@ -1,4 +1,6 @@
-//! Built-in data sources, sampled on a background thread.
+//! The sampler: appends one sample per widget per interval. Built-in sources
+//! are measured here; remote sources (see `remote`) contribute their latest
+//! held value, so every sparkline advances at the same steady rate.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,9 +12,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use super::{Source, SystemMetric};
 use crate::hub::Hub;
 
-const INTERVAL: Duration = Duration::from_secs(2);
-
-pub fn spawn_sampler(hub: Arc<Hub>) {
+pub fn spawn_sampler(hub: Arc<Hub>, interval: Duration) {
     std::thread::Builder::new()
         .name("sampler".into())
         .spawn(move || {
@@ -42,6 +42,10 @@ pub fn spawn_sampler(hub: Arc<Hub>) {
                 for w in &widgets {
                     let value = match &w.source {
                         Source::Push => continue,
+                        s if s.is_remote() => match hub.reading(&w.id) {
+                            Some(v) => v,
+                            None => continue,
+                        },
                         Source::System { metric } => match metric {
                             SystemMetric::Processes => sys.processes().len() as f64,
                             SystemMetric::Cpu => sys.global_cpu_usage() as f64,
@@ -58,10 +62,11 @@ pub fn spawn_sampler(hub: Arc<Hub>) {
                             *v = (*v + rng.gen_range(-4.0..4.0)).clamp(0.0, 100.0);
                             *v
                         }
+                        _ => continue,
                     };
                     hub.push_value(&w.id, value);
                 }
-                std::thread::sleep(INTERVAL);
+                std::thread::sleep(interval);
             }
         })
         .expect("spawn sampler thread");

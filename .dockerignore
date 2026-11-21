@@ -1,0 +1,8 @@
+target
+data
+logs
+.git
+.github
+.venv
+tools/__pycache__
+addon

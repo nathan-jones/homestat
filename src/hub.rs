@@ -6,7 +6,10 @@
 //! re-fetch `/accessories` without re-pairing.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use base64::Engine;
@@ -18,7 +21,7 @@ use crate::hap::mdns::Advertiser;
 use crate::state::{Pairing, Store};
 use crate::widgets::{NewWidget, WidgetDef, WidgetSnapshot};
 
-const HISTORY: usize = 120;
+pub const HISTORY: usize = 120;
 const MAX_BRIDGED: usize = 149;
 
 #[derive(Default)]
@@ -27,11 +30,36 @@ struct Series {
     version: u64,
 }
 
+/// Latest value from a remote source (Home Assistant, Prometheus, MQTT),
+/// held between samples so sparklines advance at a steady rate.
+#[derive(Default, Clone)]
+struct Reading {
+    value: Option<f64>,
+    /// Unit reported by the source (used when the widget has none).
+    unit: Option<String>,
+    error: Option<String>,
+}
+
+/// A HAP connection, for the dashboard.
+#[derive(Clone)]
+pub struct LiveConn {
+    pub peer: IpAddr,
+    /// Pairing id once pair-verify succeeded.
+    pub controller: Option<String>,
+    pub since: Instant,
+}
+
 pub struct Hub {
     pub name: String,
-    pub signing_key: SigningKey,
+    signing_key: RwLock<SigningKey>,
     store: Mutex<Store>,
+    /// Bumped whenever pairings change; connections re-check that their
+    /// controller is still paired and close otherwise.
+    pairing_epoch: tokio::sync::watch::Sender<u64>,
+    connections: Mutex<HashMap<u64, LiveConn>>,
+    next_conn: AtomicU64,
     series: RwLock<HashMap<String, Series>>,
+    readings: RwLock<HashMap<String, Reading>>,
     pub cameras: Mutex<HashMap<u64, CameraState>>,
     mdns: Advertiser,
 }
@@ -44,9 +72,13 @@ impl Hub {
             .expect("valid ltsk in state.json");
         Arc::new(Hub {
             name,
-            signing_key: SigningKey::from_bytes(&ltsk),
+            signing_key: RwLock::new(SigningKey::from_bytes(&ltsk)),
             store: Mutex::new(store),
+            pairing_epoch: tokio::sync::watch::Sender::new(0),
+            connections: Mutex::new(HashMap::new()),
+            next_conn: AtomicU64::new(1),
             series: RwLock::new(HashMap::new()),
+            readings: RwLock::new(HashMap::new()),
             cameras: Mutex::new(HashMap::new()),
             mdns,
         })
@@ -57,6 +89,10 @@ impl Hub {
     }
 
     // ---- identity / pairing ------------------------------------------------
+
+    pub fn signing_key(&self) -> SigningKey {
+        self.signing_key.read().unwrap().clone()
+    }
 
     pub fn device_id(&self) -> String {
         self.with_store(|s| s.data.device_id.clone())
@@ -102,11 +138,57 @@ impl Hub {
             s.data.pairings.retain(|p| p.id != id);
             s.save()
         })?;
+        self.pairing_epoch.send_modify(|e| *e += 1);
         if !self.is_paired() {
             tracing::info!("last pairing removed; accessory is pairable again");
             self.advertise();
         }
         Ok(())
+    }
+
+    /// Forgets every controller and takes on a new accessory identity, so the
+    /// bridge can be added to Home again from scratch. The old bridge in the
+    /// Home app stops responding and should be removed there.
+    pub fn reset_pairing(&self) -> Result<()> {
+        let ltsk = self.with_store(|s| {
+            s.reset_identity()?;
+            Ok::<_, anyhow::Error>(s.data.ltsk.clone())
+        })?;
+        let ltsk: [u8; 32] = hex::decode(ltsk)?.try_into().map_err(|_| anyhow::anyhow!("bad ltsk"))?;
+        *self.signing_key.write().unwrap() = SigningKey::from_bytes(&ltsk);
+        for (_, cam) in self.cameras.lock().unwrap().drain() {
+            cam.stop_all();
+        }
+        self.pairing_epoch.send_modify(|e| *e += 1);
+        tracing::info!(device_id = %self.device_id(), "pairing reset; accessory is pairable again");
+        self.advertise();
+        Ok(())
+    }
+
+    pub fn pairing_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.pairing_epoch.subscribe()
+    }
+
+    // ---- live HAP connections ---------------------------------------------------
+
+    pub fn conn_opened(&self, peer: IpAddr) -> u64 {
+        let id = self.next_conn.fetch_add(1, Ordering::Relaxed);
+        self.connections.lock().unwrap().insert(id, LiveConn { peer, controller: None, since: Instant::now() });
+        id
+    }
+
+    pub fn conn_verified(&self, id: u64, controller: &str) {
+        if let Some(c) = self.connections.lock().unwrap().get_mut(&id) {
+            c.controller = Some(controller.to_string());
+        }
+    }
+
+    pub fn conn_closed(&self, id: u64) {
+        self.connections.lock().unwrap().remove(&id);
+    }
+
+    pub fn connections(&self) -> Vec<LiveConn> {
+        self.connections.lock().unwrap().values().cloned().collect()
     }
 
     /// `X-HM://` setup URI (encodes the setup code for QR pairing).
@@ -212,6 +294,30 @@ impl Hub {
         Ok(def)
     }
 
+    /// Changes a widget in place, keeping its id and aid (so HomeKit keeps its
+    /// room and settings).
+    pub fn update_widget(&self, id: &str, req: NewWidget) -> Result<Option<WidgetDef>> {
+        let updated = self.with_store(|s| {
+            let Some(w) = s.data.widgets.iter_mut().find(|w| w.id == id) else { return Ok(None) };
+            let old = w.clone();
+            *w = req.into_def(old.id.clone(), old.aid);
+            let new = w.clone();
+            s.save()?;
+            Ok::<_, anyhow::Error>(Some((old, new)))
+        })?;
+        let Some((old, new)) = updated else { return Ok(None) };
+        if old.source != new.source {
+            self.series.write().unwrap().remove(id);
+            self.readings.write().unwrap().remove(id);
+        }
+        self.touch(id);
+        tracing::info!(id, aid = new.aid, "widget updated");
+        if old.name != new.name {
+            self.bump_config();
+        }
+        Ok(Some(new))
+    }
+
     pub fn remove_widget(&self, id: &str) -> Result<bool> {
         let removed = self.with_store(|s| {
             let before = s.data.widgets.len();
@@ -224,6 +330,7 @@ impl Hub {
             cam.stop_all();
         }
         self.series.write().unwrap().remove(id);
+        self.readings.write().unwrap().remove(id);
         tracing::info!(id, aid, "widget removed");
         self.bump_config();
         Ok(true)
@@ -243,14 +350,86 @@ impl Hub {
         true
     }
 
-    pub fn snapshot(&self, id: &str) -> Option<WidgetSnapshot> {
+    /// Seeds an empty series with historical samples (oldest first).
+    pub fn backfill(&self, id: &str, values: Vec<f64>) {
+        let mut series = self.series.write().unwrap();
+        let s = series.entry(id.to_string()).or_default();
+        if !s.samples.is_empty() {
+            return;
+        }
+        let skip = values.len().saturating_sub(HISTORY);
+        s.samples.extend(values.into_iter().skip(skip).filter(|v| v.is_finite()));
+        s.version += 1;
+    }
+
+    // ---- remote readings -------------------------------------------------------
+
+    pub fn set_reading(&self, id: &str, value: f64, unit: Option<String>) {
+        let cleared = {
+            let mut readings = self.readings.write().unwrap();
+            let r = readings.entry(id.to_string()).or_default();
+            r.value = Some(value);
+            r.unit = unit.filter(|u| !u.is_empty());
+            r.error.take().is_some()
+        };
+        if cleared {
+            tracing::info!(id, "source recovered");
+            self.touch(id);
+        }
+    }
+
+    /// Records a source problem. The widget keeps its history but stops
+    /// advancing and shows the message until a value arrives again.
+    pub fn set_source_error(&self, id: &str, msg: impl Into<String>) {
+        let msg = msg.into();
+        let changed = {
+            let mut readings = self.readings.write().unwrap();
+            let r = readings.entry(id.to_string()).or_default();
+            let changed = r.error.as_deref() != Some(msg.as_str());
+            r.error = Some(msg.clone());
+            changed
+        };
+        if changed {
+            tracing::warn!(id, "source error: {msg}");
+            self.touch(id);
+        }
+    }
+
+    /// The held value to sample for a remote widget, unless its source is failing.
+    pub fn reading(&self, id: &str) -> Option<f64> {
+        self.readings.read().unwrap().get(id).filter(|r| r.error.is_none()).and_then(|r| r.value)
+    }
+
+    pub fn source_status(&self, id: &str) -> Option<String> {
         let def = self.with_store(|s| s.data.widgets.iter().find(|w| w.id == id).cloned())?;
+        let readings = self.readings.read().unwrap();
+        match readings.get(id) {
+            Some(Reading { error: Some(e), .. }) => Some(e.clone()),
+            Some(Reading { value: Some(_), .. }) => None,
+            _ if def.source.is_remote() => Some("waiting for data".into()),
+            _ => None,
+        }
+    }
+
+    /// Forces streams to re-render (e.g. after the status line changed).
+    fn touch(&self, id: &str) {
+        self.series.write().unwrap().entry(id.to_string()).or_default().version += 1;
+    }
+
+    pub fn snapshot(&self, id: &str) -> Option<WidgetSnapshot> {
+        let mut def = self.with_store(|s| s.data.widgets.iter().find(|w| w.id == id).cloned())?;
+        let status = self.source_status(id);
+        if def.unit.is_empty() {
+            if let Some(unit) = self.readings.read().unwrap().get(id).and_then(|r| r.unit.clone()) {
+                def.unit = unit;
+            }
+        }
         let series = self.series.read().unwrap();
         let (samples, version) = series
             .get(id)
             .map(|s| (s.samples.iter().copied().collect(), s.version))
             .unwrap_or_default();
-        Some(WidgetSnapshot { def, samples, version })
+        Some(WidgetSnapshot { def, samples, status, version })
     }
 
     pub fn latest_values(&self) -> BTreeMap<String, f64> {

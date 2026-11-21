@@ -102,9 +102,10 @@ fn pair_setup_m5(hub: &Hub, conn: &mut ConnState, req: &Map) -> anyhow::Result<V
 
     let acc_x = hkdf_sha512(&k, b"Pair-Setup-Accessory-Sign-Salt", b"Pair-Setup-Accessory-Sign-Info");
     let acc_id = hub.device_id();
-    let acc_ltpk = hub.signing_key.verifying_key().to_bytes();
+    let key = hub.signing_key();
+    let acc_ltpk = key.verifying_key().to_bytes();
     let acc_info = [acc_x.as_slice(), acc_id.as_bytes(), &acc_ltpk].concat();
-    let acc_sig = hub.signing_key.sign(&acc_info).to_bytes();
+    let acc_sig = key.sign(&acc_info).to_bytes();
     let sub = Writer::new()
         .bytes(ty::IDENTIFIER, acc_id.as_bytes())
         .bytes(ty::PUBLIC_KEY, &acc_ltpk)
@@ -130,7 +131,7 @@ pub fn pair_verify(hub: &Hub, conn: &mut ConnState, body: &[u8]) -> (Vec<u8>, Op
 
             let acc_id = hub.device_id();
             let info = [acc_pub.as_slice(), acc_id.as_bytes(), &ctrl_pub].concat();
-            let sig = hub.signing_key.sign(&info).to_bytes();
+            let sig = hub.signing_key().sign(&info).to_bytes();
             let sub = Writer::new().bytes(ty::IDENTIFIER, acc_id.as_bytes()).bytes(ty::SIGNATURE, &sig).build();
             let key = hkdf_sha512(&shared, b"Pair-Verify-Encrypt-Salt", b"Pair-Verify-Encrypt-Info");
             let enc = crypto::seal(&key, b"PV-Msg02", &[], &sub);

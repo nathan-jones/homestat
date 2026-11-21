@@ -29,6 +29,7 @@ mod palette {
     pub const TEXT: [u8; 3] = [0xD8, 0xD9, 0xDA];
     pub const LINE: [u8; 3] = [0x4F, 0x8F, 0xE0];
     pub const FILL: [u8; 3] = [0x20, 0x2B, 0x3A];
+    pub const WARN: [u8; 3] = [0xF2, 0xB0, 0x3C];
 }
 
 fn color([r, g, b]: [u8; 3]) -> Color {
@@ -79,6 +80,13 @@ fn render_stat(pm: &mut Pixmap, snap: &WidgetSnapshot) {
     // Title
     let title_size = fit(&f.semibold, &snap.def.name, h * 0.10, max_text_w);
     draw_text(pm, &f.semibold, title_size, &snap.def.name, w / 2.0, h * 0.17, palette::TEXT);
+
+    // Source problem ("entity not found", "broker unreachable", ...)
+    if let Some(status) = &snap.status {
+        let status: String = status.chars().take(60).collect();
+        let size = fit(&f.semibold, &status, h * 0.065, max_text_w);
+        draw_text(pm, &f.semibold, size, &status, w / 2.0, h * 0.29, palette::WARN);
+    }
 
     // Big value
     let value = snap.samples.last().map(|v| format_value(*v, &snap.def.unit, snap.def.decimals));
@@ -201,6 +209,16 @@ fn draw_text(pm: &mut Pixmap, font: &FontRef, size: f32, text: &str, center_x: f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renders_status_line() {
+        let def: crate::widgets::WidgetDef =
+            serde_json::from_value(serde_json::json!({"id": "t", "aid": 2, "name": "Temp"})).unwrap();
+        let mut snap = WidgetSnapshot { def, samples: vec![1.0, 2.0], status: None, version: 0 };
+        let plain = render(&snap, 320, 180);
+        snap.status = Some("entity not found".into());
+        assert_ne!(plain.data(), render(&snap, 320, 180).data());
+    }
 
     #[test]
     fn formats_values() {

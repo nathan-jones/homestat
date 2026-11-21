@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>homestat</title>
+<style>
+  :root {
+    --bg: #161618; --panel: #212022; --border: #333336; --text: #d8d9da; --muted: #8e8e93;
+    --accent: #4f8fe0; --warn: #f2b03c; --danger: #e5484d; --ok: #46a758;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+  header, main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 20px; margin: 0; }
+  h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; color: var(--muted); font-size: 12px; }
+  .chip::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+  .chip.on { color: var(--text); }
+  .chip.on::before { background: var(--ok); }
+  .homekit { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  .homekit h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .homekit h2 .badge { font-size: 12px; font-weight: 500; border-radius: 999px; padding: 2px 9px; }
+  .badge.ok { background: rgba(70,167,88,.18); color: #7dd38c; }
+  .badge.wait { background: rgba(242,176,60,.15); color: var(--warn); }
+  .pair { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .pair img { width: 168px; height: 168px; background: #fff; border-radius: 6px; padding: 4px; }
+  .pair ol { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 4px; }
+  .setup-code { font: 600 28px/1 ui-monospace, monospace; letter-spacing: 2px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; display: inline-block; }
+  .waiting { color: var(--muted); margin-top: 12px; display: flex; align-items: center; gap: 8px; }
+  .waiting::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .controllers { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 6px; }
+  .controllers li { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 8px 10px; background: var(--bg); border-radius: 6px; }
+  .controllers code { color: var(--muted); font-size: 12px; }
+  .tag { font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; color: var(--muted); }
+  .live { color: #7dd38c; font-size: 12px; margin-left: auto; }
+  .idle { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .homekit .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .card img { display: block; width: 100%; aspect-ratio: 16/9; background: #212022; }
+  .card .meta { padding: 10px 12px; display: grid; gap: 2px; }
+  .card .name { font-weight: 600; }
+  .card .src { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card .status { color: var(--warn); font-size: 12px; }
+  .card .actions { display: flex; gap: 8px; padding: 0 12px 12px; }
+  button { font: inherit; border-radius: 6px; border: 1px solid var(--border); background: #2a2a2d; color: var(--text); padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: #55555a; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 0; width: min(520px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  form { padding: 20px; display: grid; gap: 12px; }
+  form h2 { margin: 0 0 4px; font-size: 17px; }
+  label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; width: 100%; }
+  textarea { font-family: ui-monospace, monospace; min-height: 64px; resize: vertical; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .error { color: var(--danger); min-height: 1em; margin: 0; }
+  .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>homestat <small id="bridge-name"></small></h1>
+  <div class="chips" id="sources"></div>
+</header>
+<main>
+  <section class="homekit" id="homekit">
+    <h2>HomeKit <span class="badge" id="hk-badge"></span></h2>
+    <div id="hk-unpaired" hidden>
+      <div class="pair">
+        <img id="hk-qr" alt="HomeKit setup QR code">
+        <div>
+          <ol>
+            <li>Open the <b>Home</b> app, tap <b>+</b> and choose <b>Add Accessory</b>.</li>
+            <li>Scan this code. Or tap <b>More options…</b>, pick <b id="hk-name"></b> and enter the setup code:</li>
+          </ol>
+          <span class="setup-code" id="hk-code"></span>
+          <ol start="3"><li>When warned it's an uncertified accessory, tap <b>Add Anyway</b>, then pick a room for each camera.</li></ol>
+          <div class="waiting" id="hk-waiting">Waiting for the Home app…</div>
+        </div>
+      </div>
+    </div>
+    <div id="hk-paired" hidden>
+      <ul class="controllers" id="hk-controllers"></ul>
+      <div class="foot">
+        <span class="hint">Every widget is a camera in Home. Each home hub (Apple TV, HomePod) and nearby device keeps its own connection.</span>
+        <button class="danger" id="hk-reset">Reset pairing…</button>
+      </div>
+    </div>
+  </section>
+  <div class="toolbar">
+    <span class="hint" id="count"></span>
+    <button class="primary" id="add">Add widget</button>
+  </div>
+  <div class="grid" id="grid"></div>
+  <p class="empty" id="empty" hidden>No widgets yet.</p>
+</main>
+
+<dialog id="dialog">
+  <form id="form" method="dialog">
+    <h2 id="form-title">Add widget</h2>
+    <label>Name <input name="name" required placeholder="Living room"></label>
+    <label>Source
+      <select name="type">
+        <option value="homeassistant">Home Assistant entity</option>
+        <option value="prometheus">Prometheus query</option>
+        <option value="mqtt">MQTT topic</option>
+        <option value="system">This machine</option>
+        <option value="push">Pushed via API</option>
+        <option value="demo">Demo (random)</option>
+      </select>
+    </label>
+    <div data-for="homeassistant" class="row">
+      <label>Entity ID <input name="entity_id" placeholder="sensor.living_room_temperature"></label>
+      <label>Attribute (optional) <input name="attribute" placeholder="state"></label>
+    </div>
+    <label data-for="prometheus">PromQL query
+      <textarea name="query" placeholder="sum(rate(node_network_receive_bytes_total[5m]))"></textarea>
+    </label>
+    <div data-for="mqtt" class="row">
+      <label>Topic <input name="topic" placeholder="zigbee2mqtt/office_sensor"></label>
+      <label>JSON path (optional) <input name="json_path" placeholder="temperature"></label>
+    </div>
+    <label data-for="system">Metric
+      <select name="metric">
+        <option value="cpu">CPU %</option>
+        <option value="memory">Memory %</option>
+        <option value="load">Load average</option>
+        <option value="processes">Processes</option>
+      </select>
+    </label>
+    <p data-for="push" class="hint">POST <code>{"value": 1.5}</code> to <code>api/widgets/&lt;id&gt;/value</code>.</p>
+    <div class="row">
+      <label>Unit <input name="unit" placeholder="auto"></label>
+      <label>Decimals <input name="decimals" type="number" min="0" max="6" placeholder="auto"></label>
+    </div>
+    <p class="hint" id="source-hint"></p>
+    <p class="error" id="form-error"></p>
+    <div class="buttons">
+      <button type="button" id="cancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const SOURCE_NAMES = { home_assistant: "Home Assistant", prometheus: "Prometheus", mqtt: "MQTT" };
+const CONFIG_KEY = { homeassistant: "home_assistant", prometheus: "prometheus", mqtt: "mqtt" };
+let configured = {};
+let widgets = [];
+let editing = null;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function describe(src) {
+  switch (src.type) {
+    case "homeassistant": return "Home Assistant · " + src.entity_id + (src.attribute ? " · " + src.attribute : "");
+    case "prometheus": return "Prometheus · " + src.query;
+    case "mqtt": return "MQTT · " + src.topic + (src.json_path ? " · " + src.json_path : "");
+    case "system": return "This machine · " + src.metric;
+    case "push": return "Pushed via API";
+    default: return "Demo";
+  }
+}
+
+function el(tag, props = {}, ...children) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...children);
+  return e;
+}
+
+function renderGrid() {
+  const grid = $("#grid");
+  const ids = widgets.map((w) => w.id).join();
+  $("#empty").hidden = widgets.length > 0;
+  $("#count").textContent = widgets.length + (widgets.length === 1 ? " widget" : " widgets") + " · each one is a camera in Home";
+  if (grid.dataset.ids !== ids) {
+    grid.dataset.ids = ids;
+    grid.replaceChildren(...widgets.map((w) => {
+      const edit = el("button", { textContent: "Edit", onclick: () => openForm(w.id) });
+      const del = el("button", { className: "danger", textContent: "Remove", onclick: () => removeWidget(w) });
+      return el("article", { className: "card", id: "w-" + w.id },
+        el("img", { alt: "" }),
+        el("div", { className: "meta" },
+          el("span", { className: "name" }), el("span", { className: "src" }), el("span", { className: "status" })),
+        el("div", { className: "actions" }, edit, del));
+    }));
+  }
+  for (const w of widgets) {
+    const card = document.getElementById("w-" + w.id);
+    card.querySelector(".name").textContent = w.name;
+    card.querySelector(".src").textContent = describe(w.source);
+    card.querySelector(".status").textContent = w.status || "";
+  }
+  refreshImages();
+}
+
+function refreshImages() {
+  const t = Date.now();
+  for (const w of widgets) {
+    const img = document.querySelector("#w-" + CSS.escape(w.id) + " img");
+    if (img) img.src = "api/widgets/" + encodeURIComponent(w.id) + "/preview.png?width=640&height=360&t=" + t;
+  }
+}
+
+async function load() {
+  const status = await api("api/status");
+  configured = status.sources;
+  $("#bridge-name").textContent = status.name;
+  $("#hk-name").textContent = status.name;
+  $("#sources").replaceChildren(...Object.entries(SOURCE_NAMES).map(([k, name]) =>
+    el("span", { className: "chip" + (configured[k] ? " on" : ""), title: configured[k] ? "configured" : "not configured", textContent: name })));
+  widgets = await api("api/widgets");
+  renderGrid();
+}
+
+function showFields() {
+  const form = $("#form");
+  const type = form.type.value;
+  for (const e of form.querySelectorAll("[data-for]")) e.hidden = e.dataset.for !== type;
+  const key = CONFIG_KEY[type];
+  $("#source-hint").textContent = key && !configured[key]
+    ? SOURCE_NAMES[key] + " isn't configured, so this widget will show an error until it is (see README)." : "";
+}
+
+function openForm(id) {
+  const form = $("#form");
+  form.reset();
+  editing = id || null;
+  $("#form-error").textContent = "";
+  $("#form-title").textContent = id ? "Edit widget" : "Add widget";
+  const firstConfigured = ["homeassistant", "prometheus", "mqtt"].find((t) => configured[CONFIG_KEY[t]]);
+  form.type.value = firstConfigured || "system";
+  const w = widgets.find((x) => x.id === id);
+  if (w) {
+    form.name.value = w.name;
+    form.unit.value = w.unit || "";
+    form.decimals.value = w.decimals ?? "";
+    form.type.value = w.source.type;
+    for (const k of ["entity_id", "attribute", "query", "topic", "json_path", "metric"]) {
+      if (w.source[k] != null) form[k].value = w.source[k];
+    }
+  }
+  showFields();
+  $("#dialog").showModal();
+}
+
+function formBody() {
+  const f = $("#form");
+  const v = (name) => f[name].value.trim();
+  const opt = (name) => v(name) || undefined;
+  const type = f.type.value;
+  const source = { type };
+  if (type === "homeassistant") Object.assign(source, { entity_id: v("entity_id"), attribute: opt("attribute") });
+  if (type === "prometheus") source.query = v("query");
+  if (type === "mqtt") Object.assign(source, { topic: v("topic"), json_path: opt("json_path") });
+  if (type === "system") source.metric = f.metric.value;
+  return {
+    name: v("name"),
+    unit: v("unit"),
+    decimals: v("decimals") === "" ? null : Number(v("decimals")),
+    source,
+  };
+}
+
+async function save(ev) {
+  ev.preventDefault();
+  try {
+    const body = JSON.stringify(formBody());
+    if (editing) await api("api/widgets/" + encodeURIComponent(editing), { method: "PUT", body });
+    else await api("api/widgets", { method: "POST", body });
+    $("#dialog").close();
+    await load();
+  } catch (e) {
+    $("#form-error").textContent = e.message;
+  }
+}
+
+async function removeWidget(w) {
+  if (!confirm("Remove " + w.name + "? Its camera disappears from Home.")) return;
+  try { await api("api/widgets/" + encodeURIComponent(w.id), { method: "DELETE" }); } catch (e) { alert(e.message); }
+  await load();
+}
+
+function ago(secs) {
+  if (secs < 60) return "just now";
+  if (secs < 3600) return Math.floor(secs / 60) + " min";
+  if (secs < 86400) return Math.floor(secs / 3600) + " h";
+  return Math.floor(secs / 86400) + " d";
+}
+
+let paired = null;
+let qrFor = null;
+async function loadPairing() {
+  const p = await api("api/pairing");
+  const badge = $("#hk-badge");
+  badge.className = "badge " + (p.paired ? "ok" : "wait");
+  badge.textContent = p.paired ? "Paired" : "Not paired";
+  $("#hk-unpaired").hidden = p.paired;
+  $("#hk-paired").hidden = !p.paired;
+  if (!p.paired) {
+    $("#hk-code").textContent = p.setup_code;
+    if (qrFor !== p.setup_uri) { qrFor = p.setup_uri; $("#hk-qr").src = "api/pairing/qr.svg?" + encodeURIComponent(p.setup_uri); }
+    $("#hk-waiting").textContent = p.unverified_connections > 0
+      ? "The Home app is connected. Finishing pairing…" : "Waiting for the Home app…";
+  } else {
+    $("#hk-controllers").replaceChildren(...p.pairings.map((c) => {
+      const live = c.connections.length
+        ? el("span", { className: "live", textContent: "● connected from " + c.connections.map((x) => x.ip).join(", ") + " · " + ago(Math.min(...c.connections.map((x) => x.connected_secs))) })
+        : el("span", { className: "idle", textContent: "not connected" });
+      return el("li", {},
+        el("span", { textContent: c.admin ? "Home owner" : "Shared user / hub" }),
+        el("code", { textContent: c.id.slice(0, 8) }),
+        c.admin ? el("span", { className: "tag", textContent: "admin" }) : "",
+        live);
+    }));
+  }
+  if (paired === false && p.paired) load().catch(() => {});
+  paired = p.paired;
+}
+
+async function resetPairing() {
+  const ok = confirm(
+    "Reset HomeKit pairing?\n\n" +
+    "This bridge gets a new HomeKit identity and every Apple device is disconnected. " +
+    "The old bridge will show \"No Response\" in Home. Remove it there (Home Settings → Hubs & Bridges → the bridge → Remove Bridge), " +
+    "then add it again with the new QR code. Your widgets are kept; their rooms will need setting again.");
+  if (!ok) return;
+  try { await api("api/pairing/reset", { method: "POST" }); } catch (e) { alert(e.message); }
+  await loadPairing();
+}
+
+function pollPairing() {
+  loadPairing().catch(() => {}).finally(() => setTimeout(pollPairing, paired ? 5000 : 2000));
+}
+
+$("#hk-reset").onclick = resetPairing;
+pollPairing();
+$("#add").onclick = () => openForm(null);
+$("#cancel").onclick = () => $("#dialog").close();
+$("#form").type.onchange = showFields;
+$("#form").onsubmit = save;
+load().catch((e) => { $("#empty").hidden = false; $("#empty").textContent = "Couldn't load: " + e.message; });
+setInterval(() => { if (!$("#dialog").open) load().catch(() => {}); }, 5000);
+</script>
+</body>
+</html>
