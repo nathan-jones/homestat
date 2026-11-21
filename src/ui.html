@@ -78,6 +78,21 @@
   .provider .buttons { justify-content: flex-start; }
   .provider .buttons .spacer { flex: 1; }
   input:disabled { opacity: .6; }
+  #dialog { max-height: calc(100vh - 32px); }
+  .preview { width: 100%; aspect-ratio: 16/9; border-radius: 6px; background: var(--bg); display: block; }
+  fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px; margin: 0; display: grid; gap: 10px; }
+  legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; }
+  .preset { width: 44px; height: 30px; padding: 0; border-radius: 6px; position: relative; overflow: hidden; font: 600 11px system-ui; }
+  .preset::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: 5px; height: 2px; background: var(--swatch-line); border-radius: 1px; }
+  .preset.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .swatches label { gap: 6px; }
+  input[type=color] { padding: 2px; height: 34px; cursor: pointer; }
+  input[type=color]:disabled { cursor: default; opacity: .45; }
+  .auto { display: flex; gap: 4px; align-items: center; font-size: 11px; }
+  .auto input { width: auto; margin: 0; }
+  @media (max-width: 480px) { .swatches { grid-template-columns: repeat(2, 1fr); } }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -122,6 +137,7 @@
 <dialog id="dialog">
   <form id="form" method="dialog">
     <h2 id="form-title">Add widget</h2>
+    <img class="preview" id="form-preview" alt="Preview">
     <label>Name <input name="name" required placeholder="Living room"></label>
     <label>Source
       <select name="type">
@@ -157,6 +173,17 @@
       <label>Unit <input name="unit" placeholder="auto"></label>
       <label>Decimals <input name="decimals" type="number" min="0" max="6" placeholder="auto"></label>
     </div>
+    <fieldset>
+      <legend>Appearance</legend>
+      <div class="presets" id="presets"></div>
+      <div class="swatches">
+        <label>Background <input type="color" name="c_background"></label>
+        <label>Text <input type="color" name="c_text"></label>
+        <label>Graph line <input type="color" name="c_line"></label>
+        <label>Graph fill <input type="color" name="c_fill">
+          <span class="auto"><input type="checkbox" name="c_fill_auto"> auto</span></label>
+      </div>
+    </fieldset>
     <p class="hint" id="source-hint"></p>
     <p class="error" id="form-error"></p>
     <div class="buttons">
@@ -297,6 +324,81 @@ function showFields() {
     ? SOURCE_NAMES[key] + " isn't set up yet: click its name at the top of the page. Until then this widget shows an error." : "";
 }
 
+// ---- appearance -------------------------------------------------------------------
+
+const DEFAULT_COLORS = { background: "#212022", text: "#d8d9da", line: "#4f8fe0" };
+const PRESETS = [
+  { name: "Default", colors: {} },
+  { name: "Light", colors: { background: "#f5f5f7", text: "#1d1d1f", line: "#0a84ff" } },
+  { name: "Midnight", colors: { background: "#0b1020", text: "#e6e9f2", line: "#7c5cff" } },
+  { name: "Forest", colors: { background: "#0f1f17", text: "#dfeee4", line: "#34c759" } },
+  { name: "Sunset", colors: { background: "#2a1416", text: "#ffe8de", line: "#ff7a45" } },
+  { name: "Alert", colors: { background: "#3a0d0f", text: "#ffe5e5", line: "#ff453a" } },
+  { name: "Mono", colors: { background: "#000000", text: "#ffffff", line: "#ffffff" } },
+];
+let colors = {};
+
+function hexMix(a, b, t) {
+  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("");
+}
+
+function effective(key) {
+  if (colors[key]) return colors[key];
+  if (key === "fill") return hexMix(effective("background"), effective("line"), 0.14);
+  return DEFAULT_COLORS[key];
+}
+
+function showColors() {
+  const f = $("#form");
+  for (const k of ["background", "text", "line", "fill"]) f["c_" + k].value = effective(k);
+  f.c_fill_auto.checked = !colors.fill;
+  f.c_fill.disabled = !colors.fill;
+  const same = (p) => ["background", "text", "line", "fill"].every((k) => (p.colors[k] || null) === (colors[k] || null));
+  document.querySelectorAll(".preset").forEach((b, i) => b.classList.toggle("active", same(PRESETS[i])));
+}
+
+$("#presets").replaceChildren(...PRESETS.map((p) => {
+  const bg = p.colors.background || DEFAULT_COLORS.background;
+  const b = el("button", { type: "button", className: "preset", title: p.name, textContent: "Aa" });
+  b.style.background = bg;
+  b.style.color = p.colors.text || DEFAULT_COLORS.text;
+  b.style.setProperty("--swatch-line", p.colors.line || DEFAULT_COLORS.line);
+  b.onclick = () => { colors = { ...p.colors }; showColors(); schedulePreview(); };
+  return b;
+}));
+
+for (const k of ["background", "text", "line", "fill"]) {
+  $("#form")["c_" + k].addEventListener("input", (e) => { colors[k] = e.target.value; showColors(); schedulePreview(); });
+}
+$("#form").c_fill_auto.addEventListener("change", (e) => {
+  if (e.target.checked) delete colors.fill; else colors.fill = effective("fill");
+  showColors();
+  schedulePreview();
+});
+
+let previewTimer = null;
+let previewUrl = null;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    const widget = formBody();
+    widget.name = widget.name || "Widget";
+    try {
+      const res = await fetch("api/preview.png?width=640&height=360", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: editing, widget }),
+      });
+      if (!res.ok) return;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(await res.blob());
+      $("#form-preview").src = previewUrl;
+    } catch {}
+  }, 120);
+}
+$("#form").addEventListener("input", (e) => { if (!e.target.name?.startsWith("c_")) schedulePreview(); });
+
 function openForm(id) {
   const form = $("#form");
   form.reset();
@@ -315,7 +417,11 @@ function openForm(id) {
       if (w.source[k] != null) form[k].value = w.source[k];
     }
   }
+  colors = { ...(w?.colors || {}) };
+  showColors();
   showFields();
+  $("#form-preview").removeAttribute("src");
+  schedulePreview();
   $("#dialog").showModal();
 }
 
@@ -333,6 +439,7 @@ function formBody() {
     name: v("name"),
     unit: v("unit"),
     decimals: v("decimals") === "" ? null : Number(v("decimals")),
+    colors: { ...colors },
     source,
   };
 }
@@ -507,7 +614,7 @@ $("#providers-close").onclick = () => $("#providers-dialog").close();
 
 $("#add").onclick = () => openForm(null);
 $("#cancel").onclick = () => $("#dialog").close();
-$("#form").type.onchange = showFields;
+$("#form").type.onchange = () => { showFields(); schedulePreview(); };
 $("#form").onsubmit = save;
 load().catch((e) => { $("#empty").hidden = false; $("#empty").textContent = "Couldn't load: " + e.message; });
 setInterval(() => { if (!$("#dialog").open && !$("#providers-dialog").open) load().catch(() => {}); }, 5000);

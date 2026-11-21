@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
                 source: Source::System { metric },
                 unit: unit.into(),
                 decimals: None,
+                colors: Default::default(),
             })?;
         }
     }

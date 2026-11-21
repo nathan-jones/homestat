@@ -15,6 +15,55 @@ pub enum Style {
     Stat,
 }
 
+/// A colour, written `#rrggbb` (`#rgb` is accepted too).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Rgb(pub [u8; 3]);
+
+impl TryFrom<String> for Rgb {
+    type Error = String;
+    fn try_from(s: String) -> Result<Rgb, String> {
+        let hex = s.trim().trim_start_matches('#');
+        let hex: String = match hex.len() {
+            3 => hex.chars().flat_map(|c| [c, c]).collect(),
+            6 => hex.to_string(),
+            _ => return Err(format!("invalid colour '{s}', expected #rrggbb")),
+        };
+        let v = u32::from_str_radix(&hex, 16).map_err(|_| format!("invalid colour '{s}', expected #rrggbb"))?;
+        Ok(Rgb([(v >> 16) as u8, (v >> 8) as u8, v as u8]))
+    }
+}
+
+impl From<Rgb> for String {
+    fn from(c: Rgb) -> String {
+        format!("#{:02x}{:02x}{:02x}", c.0[0], c.0[1], c.0[2])
+    }
+}
+
+/// Per-widget colours. Unset ones use the default (dark, Grafana-like)
+/// theme; an unset graph fill is a tint of the line colour.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Colors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<Rgb>,
+    /// Title and value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<Rgb>,
+    /// Sparkline stroke.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<Rgb>,
+    /// Area under the sparkline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Rgb>,
+}
+
+impl Colors {
+    pub fn is_default(&self) -> bool {
+        *self == Colors::default()
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SystemMetric {
@@ -63,7 +112,7 @@ impl Source {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WidgetDef {
     pub id: String,
     /// HAP accessory id; stable for the widget's lifetime so HomeKit keeps
@@ -78,9 +127,11 @@ pub struct WidgetDef {
     pub unit: String,
     #[serde(default)]
     pub decimals: Option<u8>,
+    #[serde(default, skip_serializing_if = "Colors::is_default")]
+    pub colors: Colors,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct NewWidget {
     pub id: Option<String>,
     pub name: String,
@@ -92,6 +143,8 @@ pub struct NewWidget {
     pub unit: String,
     #[serde(default)]
     pub decimals: Option<u8>,
+    #[serde(default)]
+    pub colors: Colors,
 }
 
 impl NewWidget {
@@ -104,6 +157,7 @@ impl NewWidget {
             source: self.source,
             unit: self.unit,
             decimals: self.decimals,
+            colors: self.colors,
         }
     }
 }

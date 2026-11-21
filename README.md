@@ -118,6 +118,23 @@ fails (entity missing, broker down, bad query), the widget keeps its last
 value and shows the error in amber on the tile itself, so it's visible in
 Home.
 
+## Appearance
+
+Each widget can set its own colours: `background`, `text` (title and
+value), `line` and `fill` (the sparkline), as `#rrggbb`. Unset ones use the
+default dark theme, an unset fill is a tint of the line colour, and the
+border follows the background. The widget dialog has preset themes, colour
+pickers and a live preview. Over the API:
+
+```sh
+curl -X PUT localhost:8080/api/widgets/solar -H 'content-type: application/json' -d '{
+  "name": "Solar", "unit": "kW", "source": {"type": "mqtt", "topic": "solar/power"},
+  "colors": {"background": "#f5f5f7", "text": "#1d1d1f", "line": "#0a84ff"}}'
+```
+
+Colour changes reach open camera views immediately, and the HomeKit name and
+room are kept.
+
 ## Web UI and API
 
 The web UI (`http://<host>:8080`) handles HomeKit pairing (QR code and setup

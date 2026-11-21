@@ -18,7 +18,7 @@ use serde_json::json;
 use crate::hub::Hub;
 use crate::providers::{Input, Kind, Providers, Resolved};
 use crate::widgets::remote;
-use crate::widgets::{render, NewWidget, Source};
+use crate::widgets::{render, NewWidget, Source, WidgetSnapshot};
 
 #[derive(Clone)]
 struct AppState {
@@ -41,6 +41,7 @@ pub async fn serve(hub: Arc<Hub>, port: u16, allow: Vec<IpAddr>, providers: Arc<
         .route("/api/widgets/{id}", get(get_one).put(update).delete(remove))
         .route("/api/widgets/{id}/value", post(push))
         .route("/api/widgets/{id}/preview.png", get(preview))
+        .route("/api/preview.png", post(preview_draft))
         .layer(middleware::from_fn(move |ci, req, next| allowlist(allow.clone(), ci, req, next)))
         .with_state(AppState { hub, providers });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
@@ -277,6 +278,33 @@ async fn preview(State(st): State<AppState>, Path(id): Path<String>, Query(size)
         return err(StatusCode::NOT_FOUND, "no such widget");
     };
     let (w, h) = (size.width.unwrap_or(640).clamp(16, 3840), size.height.unwrap_or(360).clamp(16, 2160));
+    match tokio::task::spawn_blocking(move || render::render_png(&snap, w, h)).await {
+        Ok(Ok(png)) => ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response(),
+        _ => err(StatusCode::INTERNAL_SERVER_ERROR, "render failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct Draft {
+    /// Existing widget whose data to show (when editing).
+    id: Option<String>,
+    widget: NewWidget,
+}
+
+/// Renders unsaved widget settings, for the live preview in the edit dialog.
+async fn preview_draft(State(st): State<AppState>, Query(size): Query<Size>, Json(draft): Json<Draft>) -> Response {
+    let existing = draft.id.as_deref().and_then(|id| st.hub.snapshot(id));
+    let samples = match &existing {
+        Some(s) if !s.samples.is_empty() => s.samples.clone(),
+        // Something plausible to show off the colours.
+        _ => (0..60).map(|i| 50.0 + 18.0 * (i as f64 / 7.0).sin() + 6.0 * (i as f64 / 2.3).cos()).collect(),
+    };
+    let mut def = draft.widget.into_def(String::new(), 0);
+    if def.unit.is_empty() {
+        def.unit = existing.map(|s| s.def.unit).unwrap_or_default();
+    }
+    let snap = WidgetSnapshot { def, samples, status: None, version: 0 };
+    let (w, h) = (size.width.unwrap_or(640).clamp(16, 1920), size.height.unwrap_or(360).clamp(16, 1080));
     match tokio::task::spawn_blocking(move || render::render_png(&snap, w, h)).await {
         Ok(Ok(png)) => ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response(),
         _ => err(StatusCode::INTERNAL_SERVER_ERROR, "render failed"),
