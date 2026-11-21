@@ -93,6 +93,17 @@
   .auto { display: flex; gap: 4px; align-items: center; font-size: 11px; }
   .auto input { width: auto; margin: 0; }
   @media (max-width: 480px) { .swatches { grid-template-columns: repeat(2, 1fr); } }
+  .styles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .styles label { display: block; cursor: pointer; }
+  .styles input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .styles span { display: grid; place-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; text-align: center; }
+  .styles svg { width: 28px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; }
+  .styles input:checked + span { border-color: var(--accent); color: var(--text); background: rgba(79,143,224,.12); }
+  .styles input:focus-visible + span { outline: 2px solid var(--accent); }
+  .state-rows { display: grid; gap: 6px; }
+  .state-row { display: grid; grid-template-columns: 80px 1fr 48px 32px; gap: 6px; align-items: center; }
+  .state-row button { padding: 6px 0; }
+  @media (max-width: 480px) { .styles { grid-template-columns: repeat(3, 1fr); } }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -169,6 +180,22 @@
       </select>
     </label>
     <p data-for="push" class="hint">POST <code>{"value": 1.5}</code> to <code>api/widgets/&lt;id&gt;/value</code>.</p>
+    <div class="styles" role="radiogroup" aria-label="Widget type">
+      <label><input type="radio" name="wstyle" value="stat"><span><svg viewBox="0 0 28 18"><path d="M2 15l6-5 5 3 6-7 7 4"/></svg>Stat</span></label>
+      <label><input type="radio" name="wstyle" value="gauge"><span><svg viewBox="0 0 28 18"><path d="M4 16a10 10 0 0 1 20 0"/><path d="M14 16l5-6"/></svg>Gauge</span></label>
+      <label><input type="radio" name="wstyle" value="bar"><span><svg viewBox="0 0 28 18"><rect x="2" y="7" width="24" height="5" rx="2.5"/><path d="M4 9.5h12" stroke-width="3"/></svg>Bar</span></label>
+      <label><input type="radio" name="wstyle" value="graph"><span><svg viewBox="0 0 28 18"><path d="M3 2v14h23"/><path d="M6 12l5-5 4 3 6-6"/></svg>Graph</span></label>
+      <label><input type="radio" name="wstyle" value="state"><span><svg viewBox="0 0 28 18"><rect x="2" y="3" width="24" height="12" rx="6"/><circle cx="20" cy="9" r="3"/></svg>State</span></label>
+    </div>
+    <div class="row" data-style="gauge bar graph">
+      <label>Min <input name="min" type="number" step="any" placeholder="0"></label>
+      <label>Max <input name="max" type="number" step="any" placeholder="100"></label>
+    </div>
+    <div data-style="state">
+      <label>States: the label shown for each value</label>
+      <div class="state-rows" id="state-rows"></div>
+      <button type="button" id="add-state" style="margin-top:6px">Add state</button>
+    </div>
     <div class="row">
       <label>Unit <input name="unit" placeholder="auto"></label>
       <label>Decimals <input name="decimals" type="number" min="0" max="6" placeholder="auto"></label>
@@ -290,7 +317,8 @@ function renderGrid() {
   for (const w of widgets) {
     const card = document.getElementById("w-" + w.id);
     card.querySelector(".name").textContent = w.name;
-    card.querySelector(".src").textContent = describe(w.source);
+    const kind = (w.style || "stat");
+    card.querySelector(".src").textContent = kind[0].toUpperCase() + kind.slice(1) + " · " + describe(w.source);
     card.querySelector(".status").textContent = w.status || "";
   }
   refreshImages();
@@ -313,6 +341,43 @@ async function load() {
     el("button", { className: "chip" + (configured[k] ? " on" : ""), title: (configured[k] ? "Connected" : "Not configured") + ": click to set up data sources", textContent: name, onclick: openProviders })));
   widgets = await api("api/widgets");
   renderGrid();
+}
+
+function currentStyle() {
+  return $("#form").querySelector('input[name="wstyle"]:checked')?.value || "stat";
+}
+
+function showStyleFields() {
+  const style = currentStyle();
+  for (const e of $("#form").querySelectorAll("[data-style]")) e.hidden = !e.dataset.style.split(" ").includes(style);
+  const f = $("#form");
+  const auto = style === "graph";
+  f.min.placeholder = auto ? "auto" : "0";
+  f.max.placeholder = auto ? "auto" : "100";
+  if (style === "state" && !$("#state-rows").children.length) {
+    addStateRow({ value: 0, label: "Off", color: "#8e8e93" });
+    addStateRow({ value: 1, label: "On", color: "#34c759" });
+  }
+}
+
+const STATE_COLORS = ["#34c759", "#ff453a", "#ff9f0a", "#0a84ff", "#bf5af2", "#8e8e93"];
+function addStateRow(st = {}) {
+  const rows = $("#state-rows");
+  const value = el("input", { type: "number", step: "any", value: st.value ?? rows.children.length, title: "Value" });
+  const label = el("input", { value: st.label ?? "", placeholder: "Label", title: "Label" });
+  const color = el("input", { type: "color", value: st.color || STATE_COLORS[rows.children.length % STATE_COLORS.length], title: "Colour" });
+  const remove = el("button", { type: "button", textContent: "×", title: "Remove" });
+  const row = el("div", { className: "state-row" }, value, label, color, remove);
+  remove.onclick = () => { row.remove(); schedulePreview(); };
+  for (const i of [value, label, color]) i.addEventListener("input", schedulePreview);
+  rows.append(row);
+}
+
+function stateRows() {
+  return [...$("#state-rows").children].map((row) => {
+    const [value, label, color] = row.querySelectorAll("input");
+    return { value: Number(value.value), label: label.value.trim(), color: color.value };
+  }).filter((s) => s.label !== "");
 }
 
 function showFields() {
@@ -408,6 +473,12 @@ function openForm(id) {
   const firstConfigured = ["homeassistant", "prometheus", "mqtt"].find((t) => configured[CONFIG_KEY[t]]);
   form.type.value = firstConfigured || "system";
   const w = widgets.find((x) => x.id === id);
+  $("#state-rows").replaceChildren();
+  for (const st of w?.states || []) addStateRow(st);
+  const style = w?.style || "stat";
+  form.querySelector(`input[name="wstyle"][value="${style}"]`).checked = true;
+  form.min.value = w?.min ?? "";
+  form.max.value = w?.max ?? "";
   if (w) {
     form.name.value = w.name;
     form.unit.value = w.unit || "";
@@ -420,6 +491,7 @@ function openForm(id) {
   colors = { ...(w?.colors || {}) };
   showColors();
   showFields();
+  showStyleFields();
   $("#form-preview").removeAttribute("src");
   schedulePreview();
   $("#dialog").showModal();
@@ -440,6 +512,10 @@ function formBody() {
     unit: v("unit"),
     decimals: v("decimals") === "" ? null : Number(v("decimals")),
     colors: { ...colors },
+    style: currentStyle(),
+    min: v("min") === "" ? null : Number(v("min")),
+    max: v("max") === "" ? null : Number(v("max")),
+    states: currentStyle() === "state" ? stateRows() : [],
     source,
   };
 }
@@ -615,6 +691,8 @@ $("#providers-close").onclick = () => $("#providers-dialog").close();
 $("#add").onclick = () => openForm(null);
 $("#cancel").onclick = () => $("#dialog").close();
 $("#form").type.onchange = () => { showFields(); schedulePreview(); };
+for (const r of $("#form").querySelectorAll('input[name="wstyle"]')) r.onchange = () => { showStyleFields(); schedulePreview(); };
+$("#add-state").onclick = () => { addStateRow(); schedulePreview(); };
 $("#form").onsubmit = save;
 load().catch((e) => { $("#empty").hidden = false; $("#empty").textContent = "Couldn't load: " + e.message; });
 setInterval(() => { if (!$("#dialog").open && !$("#providers-dialog").open) load().catch(() => {}); }, 5000);

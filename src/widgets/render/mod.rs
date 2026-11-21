@@ -1,12 +1,19 @@
 //! Widget rendering with tiny-skia (shapes) + ab_glyph (text).
 //!
 //! Layout is proportional to the frame, so the same widget renders at any
-//! resolution HomeKit asks for. New styles plug in via `render`.
+//! resolution HomeKit asks for. Each style lives in its own module; this one
+//! holds the shared pieces (palette, panel, text, series drawing).
+
+mod bar;
+mod gauge;
+mod graph;
+mod stat;
+mod state;
 
 use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 use super::{Colors, Rgb, Style, WidgetSnapshot};
 
@@ -18,8 +25,8 @@ struct Fonts {
 fn fonts() -> &'static Fonts {
     static FONTS: OnceLock<Fonts> = OnceLock::new();
     FONTS.get_or_init(|| Fonts {
-        semibold: FontRef::try_from_slice(include_bytes!("../../assets/fonts/OpenSans-SemiBold.ttf")).unwrap(),
-        bold: FontRef::try_from_slice(include_bytes!("../../assets/fonts/OpenSans-Bold.ttf")).unwrap(),
+        semibold: FontRef::try_from_slice(include_bytes!("../../../assets/fonts/OpenSans-SemiBold.ttf")).unwrap(),
+        bold: FontRef::try_from_slice(include_bytes!("../../../assets/fonts/OpenSans-Bold.ttf")).unwrap(),
     })
 }
 
@@ -35,6 +42,10 @@ struct Palette {
     background: [u8; 3],
     border: [u8; 3],
     text: [u8; 3],
+    /// Secondary text (axis labels, min/max).
+    muted: [u8; 3],
+    /// Unfilled part of gauges and bars, gridlines.
+    track: [u8; 3],
     line: [u8; 3],
     fill: [u8; 3],
     warn: [u8; 3],
@@ -51,6 +62,8 @@ impl Palette {
             background,
             border: mix(background, text, 0.08),
             text,
+            muted: mix(background, text, 0.6),
+            track: mix(background, text, 0.13),
             line,
             fill: c.fill.map(|c| c.0).unwrap_or_else(|| mix(background, line, 0.14)),
             // Amber reads on dark backgrounds; use a darker one on light ones.
@@ -76,12 +89,82 @@ fn color([r, g, b]: [u8; 3]) -> Color {
     Color::from_rgba8(r, g, b, 255)
 }
 
+/// Everything a style needs to draw one frame.
+struct Frame<'a> {
+    snap: &'a WidgetSnapshot,
+    palette: Palette,
+    w: f32,
+    h: f32,
+}
+
+impl Frame<'_> {
+    /// Current value, formatted with the widget's unit and decimals.
+    fn value_text(&self) -> String {
+        self.snap
+            .samples
+            .last()
+            .map(|v| format_value(*v, &self.snap.def.unit, self.snap.def.decimals))
+            .unwrap_or_else(|| "–".into())
+    }
+
+    /// Scale for gauge/bar: the widget's min/max, else 0–100.
+    fn range(&self) -> (f64, f64) {
+        let lo = self.snap.def.min.unwrap_or(0.0);
+        let hi = self.snap.def.max.unwrap_or(100.0);
+        if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
+    }
+
+    /// Centered title at the top, plus the source-problem line if any.
+    fn title(&self, pm: &mut Pixmap) {
+        let f = fonts();
+        let (w, h) = (self.w, self.h);
+        let name = &self.snap.def.name;
+        let size = fit(&f.semibold, name, h * 0.10, w * 0.88);
+        draw_text(pm, &f.semibold, size, name, w / 2.0, h * 0.17, self.palette.text);
+        self.status(pm, w / 2.0, h * 0.29, Align::Center);
+    }
+
+    /// The source problem ("entity not found", "broker unreachable", ...).
+    fn status(&self, pm: &mut Pixmap, x: f32, baseline: f32, align: Align) {
+        if let Some(status) = &self.snap.status {
+            let f = fonts();
+            let status: String = status.chars().take(60).collect();
+            let size = fit(&f.semibold, &status, self.h * 0.065, self.w * 0.88);
+            draw_text_aligned(pm, &f.semibold, size, &status, x, baseline, self.palette.warn, align);
+        }
+    }
+}
+
 pub fn render(snap: &WidgetSnapshot, width: u32, height: u32) -> Pixmap {
     let mut pm = Pixmap::new(width.max(2), height.max(2)).expect("non-zero size");
+    let frame = Frame { snap, palette: Palette::new(&snap.def.colors), w: pm.width() as f32, h: pm.height() as f32 };
+    panel(&mut pm, &frame);
     match snap.def.style {
-        Style::Stat => render_stat(&mut pm, snap),
+        Style::Stat => stat::draw(&mut pm, &frame),
+        Style::Gauge => gauge::draw(&mut pm, &frame),
+        Style::Bar => bar::draw(&mut pm, &frame),
+        Style::Graph => graph::draw(&mut pm, &frame),
+        Style::State => state::draw(&mut pm, &frame),
     }
     pm
+}
+
+/// Background (optionally tinted, see `state`) and a subtle border.
+fn panel(pm: &mut Pixmap, frame: &Frame) {
+    let background = match frame.snap.def.style {
+        Style::State => state::background(frame),
+        _ => frame.palette.background,
+    };
+    pm.fill(color(background));
+    let (w, h) = (frame.w, frame.h);
+    let bw = (h * 0.006).max(1.0);
+    if let Some(r) = Rect::from_xywh(bw / 2.0, bw / 2.0, w - bw, h - bw) {
+        let path = PathBuilder::from_rect(r);
+        let mut paint = Paint::default();
+        paint.set_color(color(frame.palette.border));
+        let stroke = Stroke { width: bw, ..Default::default() };
+        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
 }
 
 pub fn render_png(snap: &WidgetSnapshot, width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
@@ -100,57 +183,24 @@ pub fn render_jpeg(snap: &WidgetSnapshot, width: u32, height: u32) -> anyhow::Re
     Ok(out)
 }
 
-fn render_stat(pm: &mut Pixmap, snap: &WidgetSnapshot) {
-    let (w, h) = (pm.width() as f32, pm.height() as f32);
-    let palette = Palette::new(&snap.def.colors);
-    pm.fill(color(palette.background));
+// ---- shapes --------------------------------------------------------------------------
 
-    // Subtle panel border.
-    let bw = (h * 0.006).max(1.0);
-    if let Some(r) = Rect::from_xywh(bw / 2.0, bw / 2.0, w - bw, h - bw) {
-        let path = PathBuilder::from_rect(r);
-        let mut paint = Paint::default();
-        paint.set_color(color(palette.border));
-        let stroke = Stroke { width: bw, ..Default::default() };
-        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-    }
-
-    let f = fonts();
-    let max_text_w = w * 0.88;
-
-    // Title
-    let title_size = fit(&f.semibold, &snap.def.name, h * 0.10, max_text_w);
-    draw_text(pm, &f.semibold, title_size, &snap.def.name, w / 2.0, h * 0.17, palette.text);
-
-    // Source problem ("entity not found", "broker unreachable", ...)
-    if let Some(status) = &snap.status {
-        let status: String = status.chars().take(60).collect();
-        let size = fit(&f.semibold, &status, h * 0.065, max_text_w);
-        draw_text(pm, &f.semibold, size, &status, w / 2.0, h * 0.29, palette.warn);
-    }
-
-    // Big value
-    let value = snap.samples.last().map(|v| format_value(*v, &snap.def.unit, snap.def.decimals));
-    let value = value.as_deref().unwrap_or("–");
-    let value_size = fit(&f.bold, value, h * 0.24, max_text_w);
-    draw_text(pm, &f.bold, value_size, value, w / 2.0, h * 0.62, palette.text);
-
-    // Sparkline
-    draw_sparkline(pm, &snap.samples, &palette, w * 0.075, h * 0.70, w * 0.85, h * 0.235);
+fn paint(rgb: [u8; 3]) -> Paint<'static> {
+    let mut p = Paint::default();
+    p.anti_alias = true;
+    p.set_color(color(rgb));
+    p
 }
 
-fn draw_sparkline(pm: &mut Pixmap, samples: &[f64], palette: &Palette, x: f32, y: f32, w: f32, h: f32) {
+/// A line chart of `samples` in the box (x, y, w, h), scaled to `lo..hi`.
+#[allow(clippy::too_many_arguments)]
+fn draw_series(pm: &mut Pixmap, samples: &[f64], palette: &Palette, x: f32, y: f32, w: f32, h: f32, lo: f64, hi: f64, stroke: f32) {
     if samples.len() < 2 {
         return;
     }
-    let max = samples.iter().copied().fold(f64::MIN, f64::max);
-    let min = samples.iter().copied().fold(f64::MAX, f64::min);
-    // Zero-based like Grafana's sparklines, with headroom above the max.
-    let lo = min.min(0.0);
-    let hi = if max > lo { lo + (max - lo) * 1.15 } else { lo + 1.0 };
     let n = samples.len();
     let px = |i: usize| x + w * i as f32 / (n - 1) as f32;
-    let py = |v: f64| y + h - (((v - lo) / (hi - lo)) as f32) * h;
+    let py = |v: f64| y + h - (((v.clamp(lo, hi) - lo) / (hi - lo)) as f32) * h;
 
     let mut line = PathBuilder::new();
     let mut area = PathBuilder::new();
@@ -167,17 +217,60 @@ fn draw_sparkline(pm: &mut Pixmap, samples: &[f64], palette: &Palette, x: f32, y
     area.line_to(px(n - 1), y + h);
     area.close();
 
-    let mut paint = Paint::default();
-    paint.anti_alias = true;
     if let Some(path) = area.finish() {
-        paint.set_color(color(palette.fill));
-        pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+        pm.fill_path(&path, &paint(palette.fill), FillRule::Winding, Transform::identity(), None);
     }
     if let Some(path) = line.finish() {
-        paint.set_color(color(palette.line));
-        let stroke = Stroke { width: (h * 0.025).max(1.5), ..Default::default() };
-        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+        let stroke = Stroke { width: stroke, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+        pm.stroke_path(&path, &paint(palette.line), &stroke, Transform::identity(), None);
     }
+}
+
+/// A circular arc (angles in degrees, 0 = 3 o'clock, clockwise as y grows down).
+fn stroke_arc(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, rgb: [u8; 3]) {
+    if (to - from).abs() < 0.01 {
+        return;
+    }
+    let steps = ((to - from).abs() / 2.0).ceil().max(2.0) as usize;
+    let mut pb = PathBuilder::new();
+    for i in 0..=steps {
+        let a = (from + (to - from) * i as f32 / steps as f32).to_radians();
+        let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
+        if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+    }
+    if let Some(path) = pb.finish() {
+        let stroke = Stroke { width, line_cap: LineCap::Round, ..Default::default() };
+        pm.stroke_path(&path, &paint(rgb), &stroke, Transform::identity(), None);
+    }
+}
+
+/// A filled rectangle with fully rounded ends (a "pill").
+fn fill_pill(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, rgb: [u8; 3]) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let r = (h / 2.0).min(w / 2.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(&path, &paint(rgb), FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+// ---- text ------------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Align {
+    Left,
+    Center,
+    Right,
 }
 
 pub fn format_value(v: f64, unit: &str, decimals: Option<u8>) -> String {
@@ -215,8 +308,19 @@ fn fit(font: &FontRef, text: &str, size: f32, max_w: f32) -> f32 {
 }
 
 fn draw_text(pm: &mut Pixmap, font: &FontRef, size: f32, text: &str, center_x: f32, baseline: f32, rgb: [u8; 3]) {
+    draw_text_aligned(pm, font, size, text, center_x, baseline, rgb, Align::Center);
+}
+
+/// Draws text whose left edge, center or right edge (per `align`) is at `x`.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_aligned(pm: &mut Pixmap, font: &FontRef, size: f32, text: &str, x: f32, baseline: f32, rgb: [u8; 3], align: Align) {
     let sf = font.as_scaled(PxScale::from(size));
-    let mut x = center_x - text_width(font, size, text) / 2.0;
+    let width = text_width(font, size, text);
+    let mut x = match align {
+        Align::Left => x,
+        Align::Center => x - width / 2.0,
+        Align::Right => x - width,
+    };
     let (pw, ph) = (pm.width() as i32, pm.height() as i32);
     let stride = pm.width() as usize * 4;
     let data = pm.data_mut();

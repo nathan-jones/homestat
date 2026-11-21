@@ -212,6 +212,17 @@ fn validate(req: &NewWidget) -> Result<(), String> {
     if req.name.trim().is_empty() {
         return Err("name is required".into());
     }
+    if let (Some(lo), Some(hi)) = (req.min, req.max) {
+        if !(lo < hi) {
+            return Err("min must be less than max".into());
+        }
+    }
+    if [req.min, req.max].iter().flatten().any(|v| !v.is_finite()) {
+        return Err("min and max must be numbers".into());
+    }
+    if req.states.iter().any(|s| s.label.trim().is_empty() || !s.value.is_finite()) {
+        return Err("every state needs a value and a label".into());
+    }
     let empty = |s: &str| s.trim().is_empty();
     match &req.source {
         Source::HomeAssistant { entity_id, .. } if !entity_id.contains('.') => {

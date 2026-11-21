@@ -25,10 +25,9 @@ iPhone, iPad, Mac and Apple TV.
 * **Self-contained.** Everything from SRP pairing to H.264 encoding and SRTP is in
   the binary. No ffmpeg or Homebridge needed. openh264 is compiled from source by
   its crate.
-* **Styles are pluggable.** `widgets::Style` currently has one variant, `Stat`
-  (title, big value, sparkline, modelled on Grafana's singlestat). A new style is
-  a new enum variant plus a render function in `widgets/render.rs`. Rendering is
-  proportional, so it works at any resolution Home asks for.
+* **Several widget types.** Stat, gauge, bar, graph and state (see below). A new
+  type is a `widgets::Style` variant plus a module in `widgets/render/`.
+  Rendering is proportional, so it works at any resolution Home asks for.
 
 ## Install
 
@@ -118,6 +117,29 @@ fails (entity missing, broker down, bad query), the widget keeps its last
 value and shows the error in amber on the tile itself, so it's visible in
 Home.
 
+## Widget types
+
+Set with `"style"`, or pick one in the widget dialog.
+
+| Style | Shows | Options |
+| --- | --- | --- |
+| `stat` (default) | Title, big value, sparkline (Grafana singlestat) | |
+| `gauge` | Semicircular dial with the value in the middle | `min`, `max` (default 0–100) |
+| `bar` | Big value over a horizontal progress bar | `min`, `max` (default 0–100) |
+| `graph` | Full chart with y-axis and gridlines, current value top right | `min`, `max` (default: auto-scaled to the data, so 19–23 °C isn't a flat line) |
+| `state` | A word for the current value, in its colour on a tinted tile | `states`: `[{"value": 0, "label": "Closed", "color": "#34c759"}, ...]`; without states, 0/1 show as Off/On |
+
+```sh
+curl -X POST localhost:8080/api/widgets -H 'content-type: application/json' -d '{
+  "name": "Garage door", "style": "state",
+  "source": {"type": "homeassistant", "entity_id": "binary_sensor.garage_door"},
+  "states": [{"value": 0, "label": "Closed", "color": "#34c759"},
+             {"value": 1, "label": "Open", "color": "#ff453a"}]}'
+```
+
+Home Assistant's `on`/`off`, `open`/`closed` and `home`/`not_home` states
+arrive as 1/0, so they work with State widgets directly.
+
 ## Appearance
 
 Each widget can set its own colours: `background`, `text` (title and
@@ -205,12 +227,12 @@ published tag.
   back from the controller.
 * No MQTT over TLS yet, and Home Assistant is polled rather than subscribed
   to over its websocket.
-* Sparklines are zero-based like Grafana's, which flattens values that sit
-  far from zero (e.g. temperatures). An auto-range option would help.
+* Stat sparklines are zero-based like Grafana's, which flattens values that
+  sit far from zero (e.g. temperatures). Use the graph type for those.
 * No audio. A configuration is advertised but no audio is sent.
 * No event notifications (subscriptions are accepted but nothing is pushed).
   Not needed for cameras.
-* Possible next steps: more styles (gauge, multi-series), widget config file
+* Possible next steps: threshold colours, multi-series graphs, widget config file
   (YAML) for GitOps setups, doorbell-style alerts on thresholds.
 
 Fonts: Open Sans (SIL OFL, `assets/fonts/OFL.txt`).

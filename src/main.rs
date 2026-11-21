@@ -143,6 +143,9 @@ async fn main() -> Result<()> {
                 unit: unit.into(),
                 decimals: None,
                 colors: Default::default(),
+                min: None,
+                max: None,
+                states: vec![],
             })?;
         }
     }

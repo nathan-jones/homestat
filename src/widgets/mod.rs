@@ -13,6 +13,24 @@ pub enum Style {
     /// Title, big current value, sparkline (Grafana-style "singlestat").
     #[default]
     Stat,
+    /// Semicircular dial between `min` and `max` (default 0–100).
+    Gauge,
+    /// Big value over a horizontal bar between `min` and `max` (default 0–100).
+    Bar,
+    /// Full time-series chart with a y-axis; auto-scaled unless `min`/`max` set.
+    Graph,
+    /// A word for the current value, from `states` (e.g. 0 → Closed, 1 → Open).
+    State,
+}
+
+/// One entry of a State widget's value → label mapping.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StateMap {
+    pub value: f64,
+    pub label: String,
+    /// Colour of the label and the tile's tint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Rgb>,
 }
 
 /// A colour, written `#rrggbb` (`#rgb` is accepted too).
@@ -129,6 +147,14 @@ pub struct WidgetDef {
     pub decimals: Option<u8>,
     #[serde(default, skip_serializing_if = "Colors::is_default")]
     pub colors: Colors,
+    /// Scale for gauge/bar/graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Labels for the State style.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<StateMap>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -145,6 +171,12 @@ pub struct NewWidget {
     pub decimals: Option<u8>,
     #[serde(default)]
     pub colors: Colors,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default)]
+    pub states: Vec<StateMap>,
 }
 
 impl NewWidget {
@@ -158,6 +190,9 @@ impl NewWidget {
             unit: self.unit,
             decimals: self.decimals,
             colors: self.colors,
+            min: self.min,
+            max: self.max,
+            states: self.states,
         }
     }
 }
