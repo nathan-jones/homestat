@@ -103,6 +103,8 @@
   .state-rows { display: grid; gap: 6px; }
   .state-row { display: grid; grid-template-columns: 80px 1fr 48px 32px; gap: 6px; align-items: center; }
   .state-row button { padding: 6px 0; }
+  .threshold-row { display: grid; grid-template-columns: auto 1fr 48px 32px; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  .threshold-row button { padding: 6px 0; }
   @media (max-width: 480px) { .styles { grid-template-columns: repeat(3, 1fr); } }
   [hidden] { display: none !important; }
 </style>
@@ -190,6 +192,11 @@
     <div class="row" data-style="gauge bar graph">
       <label>Min <input name="min" type="number" step="any" placeholder="0"></label>
       <label>Max <input name="max" type="number" step="any" placeholder="100"></label>
+    </div>
+    <div data-style="stat gauge bar graph">
+      <label>Thresholds: change colour when the value reaches a level</label>
+      <div class="state-rows" id="threshold-rows"></div>
+      <button type="button" id="add-threshold" style="margin-top:6px">Add threshold</button>
     </div>
     <div data-style="state">
       <label>States: the label shown for each value</label>
@@ -373,6 +380,26 @@ function addStateRow(st = {}) {
   rows.append(row);
 }
 
+const THRESHOLD_COLORS = ["#ff9f0a", "#ff453a", "#bf5af2"];
+function addThresholdRow(t = {}) {
+  const rows = $("#threshold-rows");
+  const n = rows.children.length;
+  const from = el("input", { type: "number", step: "any", value: t.from ?? [80, 95, 99][n] ?? "", title: "From", placeholder: "value" });
+  const color = el("input", { type: "color", value: t.color || THRESHOLD_COLORS[n % THRESHOLD_COLORS.length], title: "Colour" });
+  const remove = el("button", { type: "button", textContent: "×", title: "Remove" });
+  const row = el("div", { className: "threshold-row" }, el("span", { textContent: "From" }), from, color, remove);
+  remove.onclick = () => { row.remove(); schedulePreview(); };
+  for (const i of [from, color]) i.addEventListener("input", schedulePreview);
+  rows.append(row);
+}
+
+function thresholdRows() {
+  return [...$("#threshold-rows").children].map((row) => {
+    const [from, color] = row.querySelectorAll("input");
+    return { from: from.value.trim() === "" ? NaN : Number(from.value), color: color.value };
+  }).filter((t) => Number.isFinite(t.from));
+}
+
 function stateRows() {
   return [...$("#state-rows").children].map((row) => {
     const [value, label, color] = row.querySelectorAll("input");
@@ -475,6 +502,8 @@ function openForm(id) {
   const w = widgets.find((x) => x.id === id);
   $("#state-rows").replaceChildren();
   for (const st of w?.states || []) addStateRow(st);
+  $("#threshold-rows").replaceChildren();
+  for (const t of w?.thresholds || []) addThresholdRow(t);
   const style = w?.style || "stat";
   form.querySelector(`input[name="wstyle"][value="${style}"]`).checked = true;
   form.min.value = w?.min ?? "";
@@ -516,6 +545,7 @@ function formBody() {
     min: v("min") === "" ? null : Number(v("min")),
     max: v("max") === "" ? null : Number(v("max")),
     states: currentStyle() === "state" ? stateRows() : [],
+    thresholds: currentStyle() === "state" ? [] : thresholdRows(),
     source,
   };
 }
@@ -692,6 +722,7 @@ $("#add").onclick = () => openForm(null);
 $("#cancel").onclick = () => $("#dialog").close();
 $("#form").type.onchange = () => { showFields(); schedulePreview(); };
 for (const r of $("#form").querySelectorAll('input[name="wstyle"]')) r.onchange = () => { showStyleFields(); schedulePreview(); };
+$("#add-threshold").onclick = () => { addThresholdRow(); schedulePreview(); };
 $("#add-state").onclick = () => { addStateRow(); schedulePreview(); };
 $("#form").onsubmit = save;
 load().catch((e) => { $("#empty").hidden = false; $("#empty").textContent = "Couldn't load: " + e.message; });

@@ -1,8 +1,8 @@
 //! Semicircular dial between min and max.
 
-use tiny_skia::Pixmap;
+use tiny_skia::{LineCap, Pixmap};
 
-use super::{draw_text, fit, fonts, format_value, stroke_arc, Align, Frame};
+use super::{draw_text, mix, fit, fonts, format_value, stroke_arc, Align, Frame};
 
 pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
     let (w, h, p) = (frame.w, frame.h, &frame.palette);
@@ -15,17 +15,22 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
     let (cx, cy) = (w / 2.0, h * 0.78);
     let r = (h * 0.45).min(w * 0.40);
     let thick = r * 0.21;
-    stroke_arc(pm, cx, cy, r, 180.0, 360.0, thick, p.track);
+    stroke_arc(pm, cx, cy, r, 180.0, 360.0, thick, p.track, LineCap::Round);
     let (lo, hi) = frame.range();
+    // Threshold zones as a thin band inside the track.
+    for (a, b, c) in frame.bands(lo, hi) {
+        let band = thick * 0.22;
+        stroke_arc(pm, cx, cy, r - thick / 2.0 - band, 180.0 + 180.0 * a, 180.0 + 180.0 * b, band, mix(p.background, c, 0.8), LineCap::Butt);
+    }
     if let Some(v) = frame.snap.samples.last() {
         let frac = ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
         // Keep a sliver visible at the minimum so the dial never looks broken.
-        stroke_arc(pm, cx, cy, r, 180.0, 180.0 + (180.0 * frac).max(0.5), thick, p.line);
+        stroke_arc(pm, cx, cy, r, 180.0, 180.0 + (180.0 * frac).max(0.5), thick, p.line, LineCap::Round);
     }
 
     let value = frame.value_text();
     let size = fit(&f.bold, &value, r * 0.48, (r - thick) * 1.7);
-    draw_text(pm, &f.bold, size, &value, cx, cy, p.text);
+    draw_text(pm, &f.bold, size, &value, cx, cy, p.value);
 
     // Scale ends, under the arc.
     let label = |v: f64| format_value(v, "", None);

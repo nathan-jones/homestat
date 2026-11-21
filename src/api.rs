@@ -223,6 +223,9 @@ fn validate(req: &NewWidget) -> Result<(), String> {
     if req.states.iter().any(|s| s.label.trim().is_empty() || !s.value.is_finite()) {
         return Err("every state needs a value and a label".into());
     }
+    if req.thresholds.iter().any(|t| !t.from.is_finite()) {
+        return Err("every threshold needs a number".into());
+    }
     let empty = |s: &str| s.trim().is_empty();
     match &req.source {
         Source::HomeAssistant { entity_id, .. } if !entity_id.contains('.') => {

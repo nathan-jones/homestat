@@ -11,7 +11,7 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
 
     let value = frame.value_text();
     let size = fit(&f.bold, &value, h * 0.24, w * 0.88);
-    draw_text(pm, &f.bold, size, &value, w / 2.0, h * 0.62, p.text);
+    draw_text(pm, &f.bold, size, &value, w / 2.0, h * 0.62, p.value);
 
     // Zero-based like Grafana's sparklines, with headroom above the max.
     let samples = &frame.snap.samples;

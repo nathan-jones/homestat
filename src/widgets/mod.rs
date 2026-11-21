@@ -33,6 +33,14 @@ pub struct StateMap {
     pub color: Option<Rgb>,
 }
 
+/// Recolours a widget once the value reaches `from` (the highest one
+/// reached wins), e.g. amber from 80, red from 95.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Threshold {
+    pub from: f64,
+    pub color: Rgb,
+}
+
 /// A colour, written `#rrggbb` (`#rgb` is accepted too).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -155,6 +163,9 @@ pub struct WidgetDef {
     /// Labels for the State style.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<StateMap>,
+    /// Colour changes for stat/gauge/bar/graph, sorted by `from`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thresholds: Vec<Threshold>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -177,10 +188,13 @@ pub struct NewWidget {
     pub max: Option<f64>,
     #[serde(default)]
     pub states: Vec<StateMap>,
+    #[serde(default)]
+    pub thresholds: Vec<Threshold>,
 }
 
 impl NewWidget {
-    pub fn into_def(self, id: String, aid: u64) -> WidgetDef {
+    pub fn into_def(mut self, id: String, aid: u64) -> WidgetDef {
+        self.thresholds.sort_by(|a, b| a.from.total_cmp(&b.from));
         WidgetDef {
             id,
             aid,
@@ -193,6 +207,7 @@ impl NewWidget {
             min: self.min,
             max: self.max,
             states: self.states,
+            thresholds: self.thresholds,
         }
     }
 }

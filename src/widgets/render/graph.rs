@@ -3,7 +3,7 @@
 
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 
-use super::{color, draw_series, draw_text, draw_text_aligned, fit, fonts, format_value, text_width, Align, Frame};
+use super::{color, mix, draw_series, draw_text, draw_text_aligned, fit, fonts, format_value, text_width, Align, Frame};
 
 pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
     let (w, h, p) = (frame.w, frame.h, &frame.palette);
@@ -17,7 +17,7 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
     let value_w = super::text_width(&f.bold, value_size, &value);
     let title_size = fit(&f.semibold, &def.name, h * 0.085, (right - left - value_w - w * 0.04).max(w * 0.1));
     draw_text_aligned(pm, &f.semibold, title_size, &def.name, left, h * 0.15, p.text, Align::Left);
-    draw_text_aligned(pm, &f.bold, value_size, &value, right, h * 0.155, p.text, Align::Right);
+    draw_text_aligned(pm, &f.bold, value_size, &value, right, h * 0.155, p.value, Align::Right);
     frame.status(pm, left, h * 0.235, Align::Left);
 
     let samples = &frame.snap.samples;
@@ -48,6 +48,28 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
             pm.stroke_path(&path, &grid, &stroke, Transform::identity(), None);
         }
         draw_text_aligned(pm, &f.semibold, ls, label, x0 - w * 0.015, y + ls * 0.35, p.muted, Align::Right);
+    }
+
+    // Threshold lines.
+    for th in &def.thresholds {
+        if th.from > lo && th.from < hi {
+            let y = y_of(th.from);
+            let mut pb = PathBuilder::new();
+            pb.move_to(x0, y);
+            pb.line_to(x1, y);
+            let mut paint = Paint::default();
+            paint.anti_alias = true;
+            paint.set_color(color(mix(p.background, th.color.0, 0.7)));
+            let dash = (h * 0.02).max(3.0);
+            let stroke = Stroke {
+                width: (h * 0.006).max(1.0),
+                dash: tiny_skia::StrokeDash::new(vec![dash, dash * 0.7], 0.0),
+                ..Default::default()
+            };
+            if let Some(path) = pb.finish() {
+                pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+            }
+        }
     }
 
     if samples.len() < 2 {

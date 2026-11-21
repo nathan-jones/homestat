@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
                 min: None,
                 max: None,
                 states: vec![],
+                thresholds: vec![],
             })?;
         }
     }

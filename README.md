@@ -157,6 +157,20 @@ curl -X PUT localhost:8080/api/widgets/solar -H 'content-type: application/json'
 Colour changes reach open camera views immediately, and the HomeKit name and
 room are kept.
 
+### Thresholds
+
+Stat, gauge, bar and graph widgets can change colour when the value reaches
+a level. The highest threshold reached recolours the big value and the
+line, gauge arc or bar. Gauges and bars also mark the zones along their
+scale, and graphs draw a dashed line at each level:
+
+```json
+"thresholds": [{"from": 80, "color": "#ff9f0a"}, {"from": 95, "color": "#ff453a"}]
+```
+
+Below the lowest threshold the widget uses its normal colours. In the widget
+dialog, use "Add threshold" (it suggests 80 and then 95).
+
 ## Web UI and API
 
 The web UI (`http://<host>:8080`) handles HomeKit pairing (QR code and setup
@@ -232,7 +246,7 @@ published tag.
 * No audio. A configuration is advertised but no audio is sent.
 * No event notifications (subscriptions are accepted but nothing is pushed).
   Not needed for cameras.
-* Possible next steps: threshold colours, multi-series graphs, widget config file
+* Possible next steps: multi-series graphs, widget config file
   (YAML) for GitOps setups, doorbell-style alerts on thresholds.
 
 Fonts: Open Sans (SIL OFL, `assets/fonts/OFL.txt`).

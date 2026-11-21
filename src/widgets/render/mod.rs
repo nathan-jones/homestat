@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
-use super::{Colors, Rgb, Style, WidgetSnapshot};
+use super::{Colors, Rgb, Style, Threshold, WidgetSnapshot};
 
 struct Fonts {
     semibold: FontRef<'static>,
@@ -49,6 +49,8 @@ struct Palette {
     line: [u8; 3],
     fill: [u8; 3],
     warn: [u8; 3],
+    /// The big current value: `text`, or the active threshold's colour.
+    value: [u8; 3],
 }
 
 impl Palette {
@@ -68,8 +70,27 @@ impl Palette {
             fill: c.fill.map(|c| c.0).unwrap_or_else(|| mix(background, line, 0.14)),
             // Amber reads on dark backgrounds; use a darker one on light ones.
             warn: if light { [0xA8, 0x5D, 0x00] } else { [0xF2, 0xB0, 0x3C] },
+            value: text,
         }
     }
+
+    /// Recolours the value and the line (and the default fill) with the
+    /// threshold the current value has reached, if any.
+    fn with_threshold(mut self, c: &Colors, thresholds: &[Threshold], value: Option<f64>) -> Palette {
+        if let Some(t) = value.and_then(|v| active(thresholds, v)) {
+            self.line = t.color.0;
+            self.value = t.color.0;
+            if c.fill.is_none() {
+                self.fill = mix(self.background, self.line, 0.14);
+            }
+        }
+        self
+    }
+}
+
+/// The highest threshold `v` has reached.
+fn active(thresholds: &[Threshold], v: f64) -> Option<&Threshold> {
+    thresholds.iter().filter(|t| v >= t.from).max_by(|a, b| a.from.total_cmp(&b.from))
 }
 
 fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -114,6 +135,22 @@ impl Frame<'_> {
         if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
     }
 
+    /// Threshold bands across `lo..hi` as (start, end, colour) fractions,
+    /// for marking the scale of gauges and bars.
+    fn bands(&self, lo: f64, hi: f64) -> Vec<(f32, f32, [u8; 3])> {
+        let mut ts: Vec<&Threshold> = self.snap.def.thresholds.iter().collect();
+        ts.sort_by(|a, b| a.from.total_cmp(&b.from));
+        let frac = |v: f64| ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
+        ts.iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let end = ts.get(i + 1).map(|n| frac(n.from)).unwrap_or(1.0);
+                (frac(t.from), end, t.color.0)
+            })
+            .filter(|(a, b, _)| b > a)
+            .collect()
+    }
+
     /// Centered title at the top, plus the source-problem line if any.
     fn title(&self, pm: &mut Pixmap) {
         let f = fonts();
@@ -137,7 +174,12 @@ impl Frame<'_> {
 
 pub fn render(snap: &WidgetSnapshot, width: u32, height: u32) -> Pixmap {
     let mut pm = Pixmap::new(width.max(2), height.max(2)).expect("non-zero size");
-    let frame = Frame { snap, palette: Palette::new(&snap.def.colors), w: pm.width() as f32, h: pm.height() as f32 };
+    let def = &snap.def;
+    let palette = match def.style {
+        Style::State => Palette::new(&def.colors),
+        _ => Palette::new(&def.colors).with_threshold(&def.colors, &def.thresholds, snap.samples.last().copied()),
+    };
+    let frame = Frame { snap, palette, w: pm.width() as f32, h: pm.height() as f32 };
     panel(&mut pm, &frame);
     match snap.def.style {
         Style::Stat => stat::draw(&mut pm, &frame),
@@ -227,7 +269,8 @@ fn draw_series(pm: &mut Pixmap, samples: &[f64], palette: &Palette, x: f32, y: f
 }
 
 /// A circular arc (angles in degrees, 0 = 3 o'clock, clockwise as y grows down).
-fn stroke_arc(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, rgb: [u8; 3]) {
+#[allow(clippy::too_many_arguments)]
+fn stroke_arc(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, rgb: [u8; 3], line_cap: LineCap) {
     if (to - from).abs() < 0.01 {
         return;
     }
@@ -239,8 +282,14 @@ fn stroke_arc(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, from: f32, to: f32, wid
         if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
     }
     if let Some(path) = pb.finish() {
-        let stroke = Stroke { width, line_cap: LineCap::Round, ..Default::default() };
+        let stroke = Stroke { width, line_cap, ..Default::default() };
         pm.stroke_path(&path, &paint(rgb), &stroke, Transform::identity(), None);
+    }
+}
+
+fn fill_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, rgb: [u8; 3]) {
+    if let Some(r) = Rect::from_xywh(x, y, w, h) {
+        pm.fill_rect(r, &paint(rgb), Transform::identity(), None);
     }
 }
 
@@ -389,6 +438,24 @@ mod tests {
         let def: crate::widgets::WidgetDef =
             serde_json::from_value(serde_json::json!({"id": "t", "aid": 2, "name": "T"})).unwrap();
         assert!(serde_json::to_value(&def).unwrap().get("colors").is_none());
+    }
+
+    #[test]
+    fn thresholds_recolour_value() {
+        let def: crate::widgets::WidgetDef = serde_json::from_value(serde_json::json!({
+            "id": "t", "aid": 2, "name": "CPU",
+            "thresholds": [{"from": 95, "color": "#ff0000"}, {"from": 80, "color": "#ffaa00"}]
+        }))
+        .unwrap();
+        let pal = |v: f64| Palette::new(&def.colors).with_threshold(&def.colors, &def.thresholds, Some(v));
+        assert_eq!(pal(50.0).value, defaults::TEXT);
+        assert_eq!(pal(50.0).line, defaults::LINE);
+        assert_eq!(pal(80.0).value, [0xff, 0xaa, 0x00]);
+        assert_eq!(pal(99.0).line, [0xff, 0, 0]);
+        assert_eq!(pal(99.0).fill, mix(defaults::BACKGROUND, [0xff, 0, 0], 0.14));
+        let snap = WidgetSnapshot { def, samples: vec![10.0, 97.0], status: None, version: 0 };
+        let f = Frame { palette: Palette::new(&snap.def.colors), snap: &snap, w: 100.0, h: 100.0 };
+        assert_eq!(f.bands(0.0, 100.0), vec![(0.8, 0.95, [0xff, 0xaa, 0]), (0.95, 1.0, [0xff, 0, 0])]);
     }
 
     #[test]

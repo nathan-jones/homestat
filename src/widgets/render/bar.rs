@@ -2,7 +2,7 @@
 
 use tiny_skia::Pixmap;
 
-use super::{draw_text, draw_text_aligned, fill_pill, fit, fonts, format_value, Align, Frame};
+use super::{draw_text, fill_rect, mix, draw_text_aligned, fill_pill, fit, fonts, format_value, Align, Frame};
 
 pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
     let (w, h, p) = (frame.w, frame.h, &frame.palette);
@@ -11,7 +11,7 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
 
     let value = frame.value_text();
     let size = fit(&f.bold, &value, h * 0.24, w * 0.88);
-    draw_text(pm, &f.bold, size, &value, w / 2.0, h * 0.60, p.text);
+    draw_text(pm, &f.bold, size, &value, w / 2.0, h * 0.60, p.value);
 
     let (bx, by, bw, bh) = (w * 0.075, h * 0.69, w * 0.85, h * 0.085);
     fill_pill(pm, bx, by, bw, bh, p.track);
@@ -21,6 +21,12 @@ pub(super) fn draw(pm: &mut Pixmap, frame: &Frame) {
         if frac > 0.0 {
             fill_pill(pm, bx, by, (bw * frac).max(bh), bh, p.line);
         }
+    }
+
+    // Threshold zones as a thin strip just under the bar.
+    for (a, b, c) in frame.bands(lo, hi) {
+        let (x0, x1) = (bx + bw * a, bx + bw * b);
+        fill_rect(pm, x0, by + bh * 1.35, x1 - x0, (bh * 0.22).max(1.5), mix(p.background, c, 0.8));
     }
 
     let ls = h * 0.06;
