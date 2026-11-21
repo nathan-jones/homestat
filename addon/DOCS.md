@@ -15,7 +15,10 @@ Apple TV.
    few seconds later.
 
 Home Assistant entities work without any setup. MQTT works automatically if
-the Mosquitto broker add-on is installed. Prometheus needs `prometheus_url`.
+the Mosquitto broker add-on is installed. To connect Prometheus or a
+different MQTT broker, click the source's name at the top of the Homestat
+panel, enter its details, **Test** and **Save**. (The `prometheus_url` and
+`mqtt_url` options below do the same, and lock the setting.)
 
 ## Options
 
@@ -25,7 +28,7 @@ the Mosquitto broker add-on is installed. Prometheus needs `prometheus_url`.
 | `port` | HomeKit port. Change it if Homebridge already uses 51826. |
 | `setup_code` | Setup code (`123-45-678`) used on **first start** only. Random if empty. |
 | `sample_interval` | Seconds between samples. Sparklines show the last 120. |
-| `api_lan_access` | Also serve the web UI and API on `http://<ha-host>:8099` without Home Assistant login. Needed only to push values from other machines. |
+| `api_lan_access` | Also serve the web UI and API on `http://<ha-host>:8099` without Home Assistant login. Needed only to push values from other machines. Anyone on your network can then also change widgets and data source settings. |
 | `prometheus_url` | e.g. `http://192.168.1.20:9090`. |
 | `mqtt_url` | `mqtt://user:pass@host:1883`. Overrides the Mosquitto add-on. |
 

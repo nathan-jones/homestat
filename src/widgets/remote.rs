@@ -5,19 +5,24 @@
 //! Assistant and Prometheus are polled once per sample interval; MQTT is
 //! push-based and the last message is held. On first sight of a widget, its
 //! sparkline is backfilled from the source's history where one exists.
+//!
+//! Connection settings can change at runtime (web UI): pollers read the
+//! current settings every tick and the MQTT client reconnects on change.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::watch;
 use url::Url;
 
 use super::{Source, WidgetDef};
 use crate::hub::{Hub, HISTORY};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct HomeAssistant {
     /// Base URL, e.g. `http://homeassistant.local:8123` (or
     /// `http://supervisor/core` inside an add-on).
@@ -25,12 +30,29 @@ pub struct HomeAssistant {
     pub token: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mqtt {
     pub host: String,
     pub port: u16,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+// Hand-written so tokens and passwords never end up in logs.
+impl std::fmt::Debug for HomeAssistant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HomeAssistant").field("url", &crate::providers::redact(&self.url)).finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Mqtt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mqtt")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Mqtt {
@@ -50,34 +72,37 @@ impl Mqtt {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Connections {
     pub home_assistant: Option<HomeAssistant>,
     pub prometheus: Option<Url>,
     pub mqtt: Option<Mqtt>,
 }
 
-pub fn spawn(hub: Arc<Hub>, conns: Connections, interval: Duration) {
-    let http = reqwest::Client::builder()
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!("homestat/", env!("CARGO_PKG_VERSION")))
         .build()
-        .expect("HTTP client");
-    if let Some(mqtt) = conns.mqtt.clone() {
-        tokio::spawn(run_mqtt(hub.clone(), mqtt));
-    }
-    tokio::spawn(run_pollers(hub, conns, http, interval));
+        .expect("HTTP client")
+}
+
+/// Starts the pollers and the MQTT client; `conns` delivers the current
+/// connection settings and any later changes.
+pub fn spawn(hub: Arc<Hub>, conns: watch::Receiver<Connections>, interval: Duration) {
+    tokio::spawn(supervise_mqtt(hub.clone(), conns.clone()));
+    tokio::spawn(run_pollers(hub, conns, http_client(), interval));
 }
 
 // ---- polling (Home Assistant, Prometheus) ---------------------------------------
 
-async fn run_pollers(hub: Arc<Hub>, conns: Connections, http: reqwest::Client, interval: Duration) {
-    let conns = Arc::new(conns);
+async fn run_pollers(hub: Arc<Hub>, settings: watch::Receiver<Connections>, http: reqwest::Client, interval: Duration) {
     let mut backfilled: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
+        let conns = Arc::new(settings.borrow().clone());
         let mut tasks = tokio::task::JoinSet::new();
         for w in hub.widgets() {
             match &w.source {
@@ -85,7 +110,13 @@ async fn run_pollers(hub: Arc<Hub>, conns: Connections, http: reqwest::Client, i
                     hub.set_source_error(&w.id, "MQTT is not configured");
                 }
                 Source::HomeAssistant { .. } | Source::Prometheus { .. } => {
-                    let first = backfilled.insert(backfill_key(&w));
+                    // Backfill once the source is reachable in principle,
+                    // i.e. also after it gets configured later.
+                    let configured = match w.source {
+                        Source::HomeAssistant { .. } => conns.home_assistant.is_some(),
+                        _ => conns.prometheus.is_some(),
+                    };
+                    let first = configured && backfilled.insert(backfill_key(&w, &conns));
                     let (hub, conns, http) = (hub.clone(), conns.clone(), http.clone());
                     tasks.spawn(async move {
                         if first {
@@ -103,14 +134,21 @@ async fn run_pollers(hub: Arc<Hub>, conns: Connections, http: reqwest::Client, i
             }
         }
         // Forget removed/changed widgets so they're backfilled again.
-        let live: HashSet<String> = hub.widgets().iter().map(backfill_key).collect();
+        let live: HashSet<String> = hub.widgets().iter().map(|w| backfill_key(w, &conns)).collect();
         backfilled.retain(|k| live.contains(k));
         while tasks.join_next().await.is_some() {}
     }
 }
 
-fn backfill_key(w: &WidgetDef) -> String {
-    format!("{}|{:?}", w.id, w.source)
+/// Backfill once per widget, source and server, so fixing or switching a
+/// provider's URL backfills again.
+fn backfill_key(w: &WidgetDef, conns: &Connections) -> String {
+    let server = match w.source {
+        Source::HomeAssistant { .. } => conns.home_assistant.as_ref().map(|h| h.url.to_string()),
+        Source::Prometheus { .. } => conns.prometheus.as_ref().map(Url::to_string),
+        _ => None,
+    };
+    format!("{}|{:?}|{}", w.id, w.source, server.unwrap_or_default())
 }
 
 async fn poll(conns: &Connections, http: &reqwest::Client, source: &Source) -> Result<(f64, Option<String>)> {
@@ -307,6 +345,40 @@ async fn prom_range(http: &reqwest::Client, base: &Url, query: &str, step: Durat
 
 // ---- MQTT -------------------------------------------------------------------------
 
+/// Runs an MQTT client for the configured broker, restarting it whenever the
+/// broker settings change.
+async fn supervise_mqtt(hub: Arc<Hub>, mut settings: watch::Receiver<Connections>) {
+    loop {
+        let cfg = settings.borrow_and_update().mqtt.clone();
+        let changed = async {
+            loop {
+                if settings.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+                if settings.borrow_and_update().mqtt != cfg {
+                    return;
+                }
+            }
+        };
+        // Values from a previous broker (or errors from having none) no
+        // longer apply.
+        for w in mqtt_widgets(&hub) {
+            hub.reset_reading(&w.id);
+        }
+        match cfg.clone() {
+            Some(c) => tokio::select! {
+                _ = run_mqtt(hub.clone(), c) => {}
+                _ = changed => tracing::info!("MQTT settings changed; reconnecting"),
+            },
+            None => changed.await,
+        }
+    }
+}
+
+fn mqtt_widgets(hub: &Hub) -> Vec<WidgetDef> {
+    hub.widgets().into_iter().filter(|w| matches!(w.source, Source::Mqtt { .. })).collect()
+}
+
 async fn run_mqtt(hub: Arc<Hub>, cfg: Mqtt) {
     use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 
@@ -329,6 +401,9 @@ async fn run_mqtt(hub: Arc<Hub>, cfg: Mqtt) {
                     tracing::info!("MQTT connected to {}:{}", cfg.host, cfg.port);
                     connected = true;
                     subscribed.clear();
+                    for w in mqtt_widgets(&hub) {
+                        hub.clear_source_error(&w.id);
+                    }
                     resync.reset_immediately();
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) => on_message(&hub, &p.topic, &p.payload),
@@ -420,6 +495,51 @@ pub fn to_number(v: &Value) -> Option<f64> {
         _ => return None,
     };
     n.is_finite().then_some(n)
+}
+
+// ---- connection tests (web UI "Test" button) -------------------------------------
+
+pub async fn test_home_assistant(ha: &HomeAssistant) -> Result<String> {
+    let body = get_json(http_client().get(endpoint(&ha.url, "/api/")?).bearer_auth(&ha.token))
+        .await
+        .map_err(|e| if e.to_string().starts_with("HTTP 401") { anyhow!("the access token was rejected") } else { e })?;
+    let config = get_json(http_client().get(endpoint(&ha.url, "/api/config")?).bearer_auth(&ha.token)).await.ok();
+    Ok(match config.as_ref().and_then(|c| c["version"].as_str()) {
+        Some(v) => format!("Connected to Home Assistant {v}"),
+        None => body["message"].as_str().unwrap_or("Connected").to_string(),
+    })
+}
+
+pub async fn test_prometheus(base: &Url) -> Result<String> {
+    prom_query(&http_client(), base, "1").await?;
+    let build = get_json(http_client().get(endpoint(base, "/api/v1/status/buildinfo")?)).await.ok();
+    Ok(match build.as_ref().and_then(|b| b["data"]["version"].as_str()) {
+        Some(v) => format!("Connected to Prometheus {v}"),
+        None => "Connected (queries work)".into(),
+    })
+}
+
+pub async fn test_mqtt(cfg: &Mqtt) -> Result<String> {
+    use rumqttc::{AsyncClient, Event, MqttOptions, Packet};
+    let id = format!("homestat-test-{:08x}", rand::random::<u32>());
+    let mut opts = MqttOptions::new(id, cfg.host.clone(), cfg.port);
+    if let Some(user) = &cfg.username {
+        opts.set_credentials(user.clone(), cfg.password.clone().unwrap_or_default());
+    }
+    let (client, mut eventloop) = AsyncClient::new(opts, 4);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => return Ok(()),
+                Ok(_) => {}
+                Err(e) => return Err(anyhow!("{e}")),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err(anyhow!("timed out connecting to {}:{}", cfg.host, cfg.port)));
+    let _ = client.try_disconnect();
+    result.map(|_| format!("Connected to {}:{}", cfg.host, cfg.port))
 }
 
 #[cfg(test)]

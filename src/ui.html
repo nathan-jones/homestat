@@ -64,13 +64,27 @@
   .error { color: var(--danger); min-height: 1em; margin: 0; }
   .buttons { display: flex; justify-content: flex-end; gap: 8px; }
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .chip { cursor: pointer; background: none; font: inherit; font-size: 12px; }
+  .chip:hover { border-color: #55555a; }
+  .providers { padding: 20px; display: grid; gap: 14px; }
+  .providers h2 { margin: 0; font-size: 17px; display: flex; justify-content: space-between; align-items: center; }
+  .provider { border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
+  .provider form { padding: 0; gap: 10px; }
+  .provider h3 { margin: 0; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  .provider .origin { color: var(--muted); font-size: 12px; margin: 0; }
+  .provider .result { font-size: 12px; margin: 0; min-height: 1em; }
+  .provider .result.ok { color: #7dd38c; }
+  .provider .result.bad { color: var(--danger); }
+  .provider .buttons { justify-content: flex-start; }
+  .provider .buttons .spacer { flex: 1; }
+  input:disabled { opacity: .6; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
   <h1>homestat <small id="bridge-name"></small></h1>
-  <div class="chips" id="sources"></div>
+  <div class="chips" id="sources" title="Data sources"></div>
 </header>
 <main>
   <section class="homekit" id="homekit">
@@ -152,6 +166,48 @@
   </form>
 </dialog>
 
+<dialog id="providers-dialog">
+  <div class="providers">
+    <h2>Data sources <button type="button" id="providers-close">Done</button></h2>
+    <section class="provider" data-kind="home_assistant">
+      <h3>Home Assistant <span class="badge"></span></h3>
+      <p class="origin"></p>
+      <form>
+        <label>URL <input name="url" placeholder="http://homeassistant.local:8123" autocomplete="off"></label>
+        <label>Long-lived access token <input name="token" type="password" autocomplete="new-password" placeholder="Profile → Security → Long-lived access tokens"></label>
+        <p class="result"></p>
+        <div class="buttons"><button type="button" data-act="clear" class="danger">Disconnect</button><span class="spacer"></span><button type="button" data-act="test">Test</button><button type="submit" class="primary">Save</button></div>
+      </form>
+    </section>
+    <section class="provider" data-kind="prometheus">
+      <h3>Prometheus <span class="badge"></span></h3>
+      <p class="origin"></p>
+      <form>
+        <label>URL <input name="url" placeholder="http://prometheus:9090" autocomplete="off"></label>
+        <p class="hint">Anything with the Prometheus HTTP API works: VictoriaMetrics, Thanos, Mimir.</p>
+        <p class="result"></p>
+        <div class="buttons"><button type="button" data-act="clear" class="danger">Disconnect</button><span class="spacer"></span><button type="button" data-act="test">Test</button><button type="submit" class="primary">Save</button></div>
+      </form>
+    </section>
+    <section class="provider" data-kind="mqtt">
+      <h3>MQTT <span class="badge"></span></h3>
+      <p class="origin"></p>
+      <form>
+        <div class="row">
+          <label>Broker host <input name="host" placeholder="mqtt.local" autocomplete="off"></label>
+          <label>Port <input name="port" type="number" min="1" max="65535" placeholder="1883"></label>
+        </div>
+        <div class="row">
+          <label>Username <input name="username" autocomplete="off" placeholder="optional"></label>
+          <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="optional"></label>
+        </div>
+        <p class="result"></p>
+        <div class="buttons"><button type="button" data-act="clear" class="danger">Disconnect</button><span class="spacer"></span><button type="button" data-act="test">Test</button><button type="submit" class="primary">Save</button></div>
+      </form>
+    </section>
+  </div>
+</dialog>
+
 <script>
 const $ = (s) => document.querySelector(s);
 const SOURCE_NAMES = { home_assistant: "Home Assistant", prometheus: "Prometheus", mqtt: "MQTT" };
@@ -227,7 +283,7 @@ async function load() {
   $("#bridge-name").textContent = status.name;
   $("#hk-name").textContent = status.name;
   $("#sources").replaceChildren(...Object.entries(SOURCE_NAMES).map(([k, name]) =>
-    el("span", { className: "chip" + (configured[k] ? " on" : ""), title: configured[k] ? "configured" : "not configured", textContent: name })));
+    el("button", { className: "chip" + (configured[k] ? " on" : ""), title: (configured[k] ? "Connected" : "Not configured") + ": click to set up data sources", textContent: name, onclick: openProviders })));
   widgets = await api("api/widgets");
   renderGrid();
 }
@@ -238,7 +294,7 @@ function showFields() {
   for (const e of form.querySelectorAll("[data-for]")) e.hidden = e.dataset.for !== type;
   const key = CONFIG_KEY[type];
   $("#source-hint").textContent = key && !configured[key]
-    ? SOURCE_NAMES[key] + " isn't configured, so this widget will show an error until it is (see README)." : "";
+    ? SOURCE_NAMES[key] + " isn't set up yet: click its name at the top of the page. Until then this widget shows an error." : "";
 }
 
 function openForm(id) {
@@ -354,12 +410,107 @@ function pollPairing() {
 
 $("#hk-reset").onclick = resetPairing;
 pollPairing();
+// ---- data sources -----------------------------------------------------------------
+
+const ORIGIN_TEXT = {
+  saved: "Set here.",
+  none: "Not set up.",
+};
+
+function renderProvider(section, p) {
+  const form = section.querySelector("form");
+  const badge = section.querySelector(".badge");
+  badge.className = "badge " + (p.configured ? "ok" : "wait");
+  badge.textContent = p.configured ? "Configured" : "Not set up";
+  const o = p.origin;
+  const locked = o.kind === "locked";
+  section.querySelector(".origin").textContent =
+    locked ? "Set by " + o.by + ", so it can't be changed here."
+    : o.kind === "default" ? "Using " + o.by + " (found automatically). Save other settings to override it."
+    : ORIGIN_TEXT[o.kind];
+  for (const input of form.querySelectorAll("input")) {
+    input.disabled = locked;
+    const v = p[input.name];
+    if (input.type === "password") {
+      input.value = "";
+      const set = p[input.name + "_set"];
+      input.placeholder = set ? "•••••••• (unchanged)" : input.name === "token" ? "Profile → Security → Long-lived access tokens" : "optional";
+    } else {
+      input.value = v ?? "";
+    }
+  }
+  form.querySelector('[data-act="clear"]').hidden = o.kind !== "saved";
+  for (const b of form.querySelectorAll('[data-act="test"], [type="submit"]')) b.disabled = locked;
+}
+
+async function loadProviders() {
+  const all = await api("api/providers");
+  for (const section of document.querySelectorAll(".provider")) renderProvider(section, all[section.dataset.kind]);
+}
+
+function providerInput(form) {
+  const body = {};
+  for (const input of form.querySelectorAll("input")) {
+    if (input.type === "number") { if (input.value) body[input.name] = Number(input.value); }
+    else body[input.name] = input.value;
+  }
+  return body;
+}
+
+function showResult(section, ok, msg) {
+  const r = section.querySelector(".result");
+  r.className = "result" + (ok === null ? "" : ok ? " ok" : " bad");
+  r.textContent = msg;
+}
+
+async function providerAction(section, act) {
+  const kind = section.dataset.kind;
+  const form = section.querySelector("form");
+  const buttons = form.querySelectorAll("button");
+  buttons.forEach((b) => (b.dataset.was = b.disabled, b.disabled = true));
+  showResult(section, null, act === "test" ? "Testing…" : "");
+  try {
+    if (act === "test") {
+      const r = await api("api/providers/" + kind + "/test", { method: "POST", body: JSON.stringify(providerInput(form)) });
+      showResult(section, r.ok, (r.ok ? "✓ " : "✗ ") + r.message);
+    } else if (act === "save") {
+      const all = await api("api/providers/" + kind, { method: "PUT", body: JSON.stringify(providerInput(form)) });
+      renderProvider(section, all[kind]);
+      showResult(section, true, "✓ Saved. Widgets using it update within a few seconds.");
+    } else if (act === "clear") {
+      if (!confirm("Disconnect " + section.querySelector("h3").firstChild.textContent.trim() + "? Widgets using it will show an error.")) return;
+      const all = await api("api/providers/" + kind, { method: "DELETE" });
+      renderProvider(section, all[kind]);
+      showResult(section, true, "Disconnected.");
+    }
+  } catch (e) {
+    showResult(section, false, "✗ " + e.message);
+  } finally {
+    buttons.forEach((b) => (b.disabled = b.dataset.was === "true"));
+    load().catch(() => {});
+  }
+}
+
+async function openProviders() {
+  for (const r of document.querySelectorAll(".provider .result")) r.textContent = "";
+  try { await loadProviders(); } catch (e) { alert(e.message); return; }
+  $("#providers-dialog").showModal();
+}
+
+for (const section of document.querySelectorAll(".provider")) {
+  const form = section.querySelector("form");
+  form.onsubmit = (ev) => { ev.preventDefault(); providerAction(section, "save"); };
+  form.querySelector('[data-act="test"]').onclick = () => providerAction(section, "test");
+  form.querySelector('[data-act="clear"]').onclick = () => providerAction(section, "clear");
+}
+$("#providers-close").onclick = () => $("#providers-dialog").close();
+
 $("#add").onclick = () => openForm(null);
 $("#cancel").onclick = () => $("#dialog").close();
 $("#form").type.onchange = showFields;
 $("#form").onsubmit = save;
 load().catch((e) => { $("#empty").hidden = false; $("#empty").textContent = "Couldn't load: " + e.message; });
-setInterval(() => { if (!$("#dialog").open) load().catch(() => {}); }, 5000);
+setInterval(() => { if (!$("#dialog").open && !$("#providers-dialog").open) load().catch(() => {}); }, 5000);
 </script>
 </body>
 </html>

@@ -66,21 +66,17 @@ impl Addon {
         if self.options.api_lan_access { vec![] } else { vec![IpAddr::from(INGRESS_PROXY)] }
     }
 
-    /// MQTT broker from the options, else from the Supervisor's service registry.
-    pub async fn mqtt(&self) -> Option<Mqtt> {
-        if let Some(url) = self.options.mqtt_url.as_deref().filter(|s| !s.is_empty()) {
-            return match Mqtt::from_url(url) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    tracing::error!("mqtt_url: {e:#}");
-                    None
-                }
-            };
-        }
+    /// MQTT broker from the add-on options (`mqtt_url`), if set.
+    pub fn mqtt_option(&self) -> Result<Option<Mqtt>> {
+        self.options.mqtt_url.as_deref().filter(|s| !s.is_empty()).map(Mqtt::from_url).transpose()
+    }
+
+    /// The broker of the Mosquitto add-on, if installed.
+    pub async fn mqtt_service(&self) -> Option<Mqtt> {
         match self.discover_mqtt().await {
             Ok(m) => m,
             Err(e) => {
-                tracing::info!("no MQTT service from the Supervisor ({e:#}); MQTT widgets disabled");
+                tracing::info!("no MQTT service from the Supervisor ({e:#})");
                 None
             }
         }

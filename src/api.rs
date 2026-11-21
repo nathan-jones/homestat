@@ -10,29 +10,23 @@ use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::hub::Hub;
+use crate::providers::{Input, Kind, Providers, Resolved};
+use crate::widgets::remote;
 use crate::widgets::{render, NewWidget, Source};
-
-/// Which remote sources have connection settings (shown in the UI).
-#[derive(Serialize, Clone, Copy)]
-pub struct Configured {
-    pub home_assistant: bool,
-    pub prometheus: bool,
-    pub mqtt: bool,
-}
 
 #[derive(Clone)]
 struct AppState {
     hub: Arc<Hub>,
-    configured: Configured,
+    providers: Arc<Providers>,
 }
 
-pub async fn serve(hub: Arc<Hub>, port: u16, allow: Vec<IpAddr>, configured: Configured) -> anyhow::Result<()> {
+pub async fn serve(hub: Arc<Hub>, port: u16, allow: Vec<IpAddr>, providers: Arc<Providers>) -> anyhow::Result<()> {
     let allow = Arc::new(allow);
     let app = Router::new()
         .route("/", get(index))
@@ -40,12 +34,15 @@ pub async fn serve(hub: Arc<Hub>, port: u16, allow: Vec<IpAddr>, configured: Con
         .route("/api/pairing", get(pairing))
         .route("/api/pairing/reset", post(reset_pairing))
         .route("/api/pairing/qr.svg", get(pairing_qr))
+        .route("/api/providers", get(providers_view))
+        .route("/api/providers/{kind}", put(provider_save).delete(provider_clear))
+        .route("/api/providers/{kind}/test", post(provider_test))
         .route("/api/widgets", get(list).post(create))
         .route("/api/widgets/{id}", get(get_one).put(update).delete(remove))
         .route("/api/widgets/{id}/value", post(push))
         .route("/api/widgets/{id}/preview.png", get(preview))
         .layer(middleware::from_fn(move |ci, req, next| allowlist(allow.clone(), ci, req, next)))
-        .with_state(AppState { hub, configured });
+        .with_state(AppState { hub, providers });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("web UI on http://localhost:{port}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -73,13 +70,70 @@ fn err(status: StatusCode, msg: impl ToString) -> Response {
 
 async fn status(State(st): State<AppState>) -> Json<serde_json::Value> {
     let hub = &st.hub;
+    let conns = st.providers.current();
     Json(json!({
         "name": hub.name,
         "paired": hub.is_paired(),
         "setup_code": hub.setup_code(),
         "setup_uri": hub.setup_uri(),
-        "sources": st.configured,
+        "sources": {
+            "home_assistant": conns.home_assistant.is_some(),
+            "prometheus": conns.prometheus.is_some(),
+            "mqtt": conns.mqtt.is_some(),
+        },
     }))
+}
+
+// ---- data providers -------------------------------------------------------------
+
+async fn providers_view(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(st.providers.view())
+}
+
+fn kind(s: &str) -> Result<Kind, Response> {
+    Kind::parse(s).ok_or_else(|| err(StatusCode::NOT_FOUND, "unknown provider"))
+}
+
+async fn provider_save(State(st): State<AppState>, Path(k): Path<String>, Json(input): Json<Input>) -> Response {
+    let k = match kind(&k) {
+        Ok(k) => k,
+        Err(r) => return r,
+    };
+    let result = st.providers.resolve(k, &input).and_then(|r| st.providers.save(k, Some(r)));
+    match result {
+        Ok(()) => Json(st.providers.view()).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+async fn provider_clear(State(st): State<AppState>, Path(k): Path<String>) -> Response {
+    let k = match kind(&k) {
+        Ok(k) => k,
+        Err(r) => return r,
+    };
+    match st.providers.save(k, None) {
+        Ok(()) => Json(st.providers.view()).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+/// Tries the submitted settings without saving them.
+async fn provider_test(State(st): State<AppState>, Path(k): Path<String>, Json(input): Json<Input>) -> Response {
+    let k = match kind(&k) {
+        Ok(k) => k,
+        Err(r) => return r,
+    };
+    let result = match st.providers.resolve(k, &input) {
+        Ok(Resolved::HomeAssistant(h)) => remote::test_home_assistant(&h).await,
+        Ok(Resolved::Prometheus(u)) => remote::test_prometheus(&u).await,
+        Ok(Resolved::Mqtt(m)) => remote::test_mqtt(&m).await,
+        Err(e) => Err(e),
+    };
+    Json(match result {
+        Ok(msg) => json!({ "ok": true, "message": msg }),
+        Err(e) => json!({ "ok": false, "message": format!("{e:#}") }),
+    })
+    .into_response()
 }
 
 /// HomeKit pairing state: setup code, paired controllers and which of them

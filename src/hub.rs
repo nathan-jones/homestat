@@ -395,6 +395,20 @@ impl Hub {
         }
     }
 
+    /// Forgets a remote widget's held value and error ("waiting for data").
+    pub fn reset_reading(&self, id: &str) {
+        if self.readings.write().unwrap().remove(id).is_some() {
+            self.touch(id);
+        }
+    }
+
+    pub fn clear_source_error(&self, id: &str) {
+        let cleared = self.readings.write().unwrap().get_mut(id).and_then(|r| r.error.take()).is_some();
+        if cleared {
+            self.touch(id);
+        }
+    }
+
     /// The held value to sample for a remote widget, unless its source is failing.
     pub fn reading(&self, id: &str) -> Option<f64> {
         self.readings.read().unwrap().get(id).filter(|r| r.error.is_none()).and_then(|r| r.value)

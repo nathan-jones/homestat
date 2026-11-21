@@ -89,6 +89,17 @@ cargo run --release -- --setup-code 031-45-154 --ha-url http://homeassistant.loc
 | `--prometheus-url` | `HOMESTAT_PROMETHEUS_URL` | | Prometheus-compatible HTTP API |
 | `--mqtt-url` | `HOMESTAT_MQTT_URL` | | `mqtt://[user[:pass]@]host[:port]` (no TLS yet) |
 
+### Data sources in the web UI
+
+Home Assistant, Prometheus and MQTT can also be set up in the web UI: click a
+source's name at the top of the page. **Test** checks the settings without
+saving them. **Save** applies them immediately, with no restart: widgets
+recover within one sample interval and MQTT reconnects. Settings are stored
+in `<data dir>/providers.json`, readable only by its owner because it holds
+the token and password, which the UI never shows again. A source set by a
+flag or environment variable (or by the add-on) wins over the UI and appears
+there as read-only.
+
 ## Widget sources
 
 | `source` | Fields | |
