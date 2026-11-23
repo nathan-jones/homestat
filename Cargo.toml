@@ -18,7 +18,7 @@ axum = "0.8"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 clap = { version = "4.6.9", features = ["derive", "env"] }
-ctr = "0.9"
+ctr = "0.10"
 ed25519-dalek = "2"
 hex = "0.4.3"
 hkdf = "0.12"
