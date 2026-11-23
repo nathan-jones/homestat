@@ -17,17 +17,17 @@ pub fn hkdf_sha512(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
 fn nonce(n: &[u8]) -> Nonce {
     let mut b = [0u8; 12];
     b[12 - n.len()..].copy_from_slice(n);
-    *Nonce::from_slice(&b)
+    Nonce::from(b)
 }
 
 pub fn seal(key: &[u8; 32], nonce_bytes: &[u8], aad: &[u8], msg: &[u8]) -> Vec<u8> {
-    ChaCha20Poly1305::new(Key::from_slice(key))
+    ChaCha20Poly1305::new(&Key::from(*key))
         .encrypt(&nonce(nonce_bytes), Payload { msg, aad })
         .expect("chacha20poly1305 encryption cannot fail")
 }
 
 pub fn open(key: &[u8; 32], nonce_bytes: &[u8], aad: &[u8], msg: &[u8]) -> Result<Vec<u8>> {
-    ChaCha20Poly1305::new(Key::from_slice(key))
+    ChaCha20Poly1305::new(&Key::from(*key))
         .decrypt(&nonce(nonce_bytes), Payload { msg, aad })
         .map_err(|_| anyhow!("decryption failed"))
 }

@@ -14,6 +14,10 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # RustCrypto and dalek crates share trait crates and must move
+      # together, or each PR fails on its own.
+      crypto:
+        patterns: [aes, ctr, sha1, sha2, hmac, hkdf, chacha20poly1305, "*-dalek", num-bigint]
       cargo:
         update-types: [minor, patch]
 

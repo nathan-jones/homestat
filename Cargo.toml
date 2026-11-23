@@ -12,22 +12,22 @@ publish = false
 
 [dependencies]
 ab_glyph = "0.2.32"
-aes = "0.8"
+aes = "0.9"
 anyhow = "1.0.104"
 axum = "0.8"
 base64 = "0.22"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 clap = { version = "4.6.9", features = ["derive", "env"] }
-ctr = "0.9"
-ed25519-dalek = "2"
+ctr = "0.10"
+ed25519-dalek = "3"
 hex = "0.4.3"
-hkdf = "0.12"
-hmac = "0.12"
+hkdf = "0.13"
+hmac = "0.13"
 httparse = "1.10.1"
 jiff = "1.0.1"
 jpeg-encoder = "0.7.1"
 mdns-sd = "0.22.0"
-num-bigint = "0.4"
+num-bigint = "0.5"
 openh264 = "0.9.10"
 percent-encoding = "2.3.2"
 qrcode = "0.15.0"
@@ -36,8 +36,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 rumqttc = { version = "0.25.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 socket2 = "0.6.5"
 sysinfo = "0.40.4"
 tiny-skia = "0.12.0"
@@ -45,4 +45,4 @@ tokio = { version = "1.54.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = { version = "2.5.9", features = ["serde"] }
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
