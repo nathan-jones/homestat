@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::widgets::WidgetDef;
@@ -92,26 +92,26 @@ struct Identity {
 
 impl Identity {
     fn generate() -> Identity {
-        let mut rng = rand::thread_rng();
-        let mac: Vec<String> = (0..6).map(|_| format!("{:02X}", rng.r#gen::<u8>())).collect();
+        let mut rng = rand::rng();
+        let mac: Vec<String> = (0..6).map(|_| format!("{:02X}", rng.random::<u8>())).collect();
         Identity {
             device_id: mac.join(":"),
             setup_id: (0..4)
                 .map(|_| {
-                    let c = rng.gen_range(0..36u8);
+                    let c = rng.random_range(0..36u8);
                     (if c < 10 { b'0' + c } else { b'A' + c - 10 }) as char
                 })
                 .collect(),
-            ltsk: hex::encode(rng.r#gen::<[u8; 32]>()),
+            ltsk: hex::encode(rng.random::<[u8; 32]>()),
         }
     }
 }
 
 fn random_setup_code() -> String {
     const INVALID: [&str; 2] = ["12345678", "87654321"];
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     loop {
-        let digits: String = (0..8).map(|_| char::from(b'0' + rng.gen_range(0..10u8))).collect();
+        let digits: String = (0..8).map(|_| char::from(b'0' + rng.random_range(0..10u8))).collect();
         let all_same = digits.chars().all(|c| Some(c) == digits.chars().next());
         if !all_same && !INVALID.contains(&digits.as_str()) {
             return format!("{}-{}-{}", &digits[0..3], &digits[3..5], &digits[5..8]);

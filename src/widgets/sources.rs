@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 use super::{Source, SystemMetric};
@@ -24,7 +24,7 @@ pub fn spawn_sampler(hub: Arc<Hub>, interval: Duration) {
                 }
             };
             let mut demo: HashMap<String, f64> = HashMap::new();
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             loop {
                 let widgets = hub.widgets();
                 let needs = |m: SystemMetric| {
@@ -58,8 +58,8 @@ pub fn spawn_sampler(hub: Arc<Hub>, interval: Duration) {
                             },
                         },
                         Source::Demo => {
-                            let v = demo.entry(w.id.clone()).or_insert_with(|| rng.gen_range(20.0..80.0));
-                            *v = (*v + rng.gen_range(-4.0..4.0)).clamp(0.0, 100.0);
+                            let v = demo.entry(w.id.clone()).or_insert_with(|| rng.random_range(20.0..80.0));
+                            *v = (*v + rng.random_range(-4.0..4.0)).clamp(0.0, 100.0);
                             *v
                         }
                         _ => continue,

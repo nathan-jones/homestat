@@ -9,7 +9,7 @@ use anyhow::Result;
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, Profile, RateControlMode, UsageType};
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 use openh264::OpenH264API;
-use rand::Rng;
+use rand::RngExt;
 
 use super::rtp::{split_annexb, RtpPacketizer};
 use super::srtp::Srtp;
@@ -90,9 +90,9 @@ fn run(
         0 => Some(Srtp::new(&pending.srtp_key, &pending.srtp_salt)?),
         _ => None,
     };
-    let mut rng = rand::thread_rng();
-    let mut rtp = RtpPacketizer::new(pending.ssrc, params.payload_type, params.mtu, rng.r#gen());
-    let ts_base: u32 = rng.r#gen();
+    let mut rng = rand::rng();
+    let mut rtp = RtpPacketizer::new(pending.ssrc, params.payload_type, params.mtu, rng.random());
+    let ts_base: u32 = rng.random();
     let mut encoder = make_encoder(&params)?;
 
     let start = Instant::now();
@@ -114,7 +114,7 @@ fn run(
         }
         if let Some(p) = reconfig.lock().unwrap().take() {
             encoder = make_encoder(&p)?;
-            rtp = RtpPacketizer::new(rtp.ssrc, p.payload_type, p.mtu, rng.r#gen());
+            rtp = RtpPacketizer::new(rtp.ssrc, p.payload_type, p.mtu, rng.random());
             params = p;
             rendered = None;
         }
