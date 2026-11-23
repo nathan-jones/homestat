@@ -1,7 +1,7 @@
 //! SRTP / SRTCP sender side, AES_CM_128_HMAC_SHA1_80 (RFC 3711), KDR = 0.
 
 use aes::cipher::{KeyIvInit, StreamCipher};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
