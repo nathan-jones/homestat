@@ -3,7 +3,7 @@
 //! K = H(PAD(S)), M1 = H(H(N) xor H(g) | H(I) | s | A | B | K), M2 = H(A | M1 | K).
 
 use num_bigint::BigUint;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha512};
 
 const N_HEX: &str = concat!(
@@ -52,7 +52,7 @@ pub struct SrpServer {
 
 impl SrpServer {
     pub fn new(username: &[u8], password: &[u8]) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut salt = [0u8; 16];
         rng.fill_bytes(&mut salt);
         let mut b_bytes = [0u8; 32];

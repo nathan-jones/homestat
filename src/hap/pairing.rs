@@ -1,7 +1,7 @@
 //! Pair-setup (SRP), pair-verify (X25519 + Ed25519) and pairing management.
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
-use rand::RngCore;
+use rand::Rng;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use super::crypto::{self, hkdf_sha512, Session};
@@ -124,7 +124,7 @@ pub fn pair_verify(hub: &Hub, conn: &mut ConnState, body: &[u8]) -> (Vec<u8>, Op
                 return (error(2, err::UNKNOWN), None);
             };
             let mut seed = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut seed);
+            rand::rng().fill_bytes(&mut seed);
             let secret = StaticSecret::from(seed);
             let acc_pub = PublicKey::from(&secret).to_bytes();
             let shared = secret.diffie_hellman(&PublicKey::from(ctrl_pub)).to_bytes();

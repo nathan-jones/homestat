@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 use anyhow::{anyhow, bail, Context, Result};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::hap::tlv::{Map, Writer};
 use crate::hub::Hub;
@@ -152,7 +152,7 @@ pub fn setup_endpoints(hub: &Hub, aid: u64, data: &[u8], link: Link) -> Result<V
     let audio_socket = UdpSocket::bind((bind_ip, 0))?;
     let local_video_port = video_socket.local_addr()?.port();
     let local_audio_port = audio_socket.local_addr()?.port();
-    let ssrc: u32 = rand::thread_rng().r#gen();
+    let ssrc: u32 = rand::rng().random();
 
     let our_addr = Writer::new()
         .u8(1, local_ip.is_ipv6() as u8)
@@ -169,7 +169,7 @@ pub fn setup_endpoints(hub: &Hub, aid: u64, data: &[u8], link: Link) -> Result<V
         .bytes(4, &our_srtp)
         .bytes(5, &audio_srtp)
         .u32(6, ssrc)
-        .u32(7, rand::thread_rng().r#gen())
+        .u32(7, rand::rng().random())
         .build();
 
     tracing::info!(aid, controller = %ip, video_port, suite, local = %local_ip, local_video_port, "stream endpoints prepared");
