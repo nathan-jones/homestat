@@ -1,0 +1,19 @@
+# Test Prometheus for homestat: Prometheus on :9090 scraping itself and a
+# node-exporter. Works with `docker compose` or `podman compose`.
+#
+#   docker compose -f examples/prometheus/compose.yml up -d
+#   cargo run -- --prometheus-url http://localhost:9090 --data-dir ./data-prom
+#   ./examples/prometheus/seed-widgets.sh
+services:
+  prometheus:
+    image: docker.io/prom/prometheus:v3.5.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  node-exporter:
+    # On macOS this reports the Docker/Podman VM, which is fine for testing.
+    image: docker.io/prom/node-exporter:v1.9.1
+    restart: unless-stopped

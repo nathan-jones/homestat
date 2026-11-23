@@ -25,5 +25,6 @@ VOLUME /data
 EXPOSE 51826 8080
 LABEL org.opencontainers.image.title="homestat" \
       org.opencontainers.image.description="Home Assistant, Prometheus and MQTT stats as HomeKit cameras" \
-      org.opencontainers.image.source="https://github.com/nathan-jones/homestat"
+      org.opencontainers.image.source="https://github.com/nathan-jones/homestat" \
+      org.opencontainers.image.licenses="MIT"
 ENTRYPOINT ["/usr/local/bin/homestat"]

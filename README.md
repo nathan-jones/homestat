@@ -1,252 +1,228 @@
 # homestat
 
-A HomeKit **bridge** for homelabs: it renders numbers from **Home Assistant**,
-**Prometheus** and **MQTT** as small stat tiles (title, big value, sparkline)
-and exposes each one as a **camera** in the Apple Home app, so they're on your
-iPhone, iPad, Mac and Apple TV.
+Put your homelab numbers in the Apple Home app.
 
-```
-                 ┌──────────────────────────── homestat ─────────────────────────────┐
- Home app ◄─HAP─►│ HAP server (pair-setup/verify, /accessories, /characteristics,     │
- (iPhone/        │             /resource snapshots)          ▲                         │
-  Apple TV)      │                                           │ c# bump + mDNS re-announce
-     ▲           │ Hub: widgets ── aid 2..n (bridged cameras)┘ on add/remove          │
-     │           │   │                                                                │
-     └─SRTP/UDP──│ stream thread: render (tiny-skia) → H.264 (openh264) → RTP → SRTP  │
-                 │   ▲                                                                │
-                 │ sources: HA · Prometheus · MQTT · host   web UI + API :8080          │
-                 └────────────────────────────────────────────────────────────────────┘
-```
+homestat reads values from **Home Assistant**, **Prometheus** and **MQTT**,
+draws each one as a small dashboard tile (a stat with a sparkline, a gauge, a
+bar, a graph or a status word) and shows it as a **camera** in Apple Home. Your
+tiles then appear on your iPhone, iPad, Mac and Apple TV next to the rest of
+your home.
 
-* **One pairing, many cameras.** The server is a HAP bridge (aid 1); every widget
-  is a bridged camera accessory with a stable aid. Adding or removing a widget
-  bumps the HAP configuration number (`c#`) and re-announces over mDNS, so Home
-  picks up the change without re-pairing. (HomeKit caps a bridge at 150 accessories.)
-* **Self-contained.** Everything from SRP pairing to H.264 encoding and SRTP is in
-  the binary. No ffmpeg or Homebridge needed. openh264 is compiled from source by
-  its crate.
-* **Several widget types.** Stat, gauge, bar, graph and state (see below). A new
-  type is a `widgets::Style` variant plus a module in `widgets/render/`.
-  Rendering is proportional, so it works at any resolution Home asks for.
+<p align="center">
+  <img src="docs/homestat.jpg" width="400" alt="Stat, graph, gauge, bar and state widgets on a smart display, showing CPU, memory, network and node exporter status">
+</p>
 
-## Install
+* One pairing for all tiles. New widgets appear in Home without pairing again.
+* A single binary with no ffmpeg or Homebridge needed.
+* Configure everything in a web UI with live previews.
 
-Every option is a flag or an environment variable (`homestat --help`). The
-pairing keys and widgets live in the data directory, so back it up: losing it
-means removing the bridge from Home and pairing again (the web UI's
-**Reset pairing** does the same on purpose, keeping your widgets).
+## Quick start
 
-### Docker
+You need a Linux machine on the same network as your Apple devices (host
+networking is required, so Docker Desktop on macOS or Windows won't work), or
+a Home Assistant OS install.
 
-Needs **host networking** (HomeKit uses mDNS discovery and sends video over
-UDP straight to the viewer), so run it on Linux.
+### Option 1: Home Assistant add-on
+
+1. In Home Assistant go to **Settings → Add-ons → Add-on store → ⋮ →
+   Repositories** and add `https://github.com/nathan-jones/homestat`.
+2. Install **Homestat**, start it, and open **Homestat** in the sidebar.
+
+The add-on connects to Home Assistant by itself and finds the Mosquitto
+broker add-on if you have it. More in [addon/DOCS.md](addon/DOCS.md).
+
+### Option 2: Docker
 
 ```sh
-cp .env.example .env    # fill in the sources you use
+mkdir homestat && cd homestat
+curl -O https://raw.githubusercontent.com/nathan-jones/homestat/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/nathan-jones/homestat/main/.env.example
+# edit .env and fill in the sources you use, then:
 docker compose up -d
-docker compose logs     # shows the pairing QR code
 ```
 
-Or without compose:
+Or as a one-liner:
 
 ```sh
 docker run -d --name homestat --network host -v ./data:/data \
-  -e HOMESTAT_HA_URL=http://homeassistant.local:8123 -e HOMESTAT_HA_TOKEN=... \
+  -e HOMESTAT_HA_URL=http://homeassistant.local:8123 \
+  -e HOMESTAT_HA_TOKEN=your-long-lived-token \
   ghcr.io/nathan-jones/homestat
 ```
 
-Then open `http://<host>:8080`, scan the QR code with the Home app (**Add
-Accessory**, then confirm *Add Anyway* for the uncertified accessory), and add
-widgets.
+### Option 3: From source
 
-### Home Assistant add-on
-
-The repository is an add-on repository (`repository.yaml`, add-on in
-`addon/`). The add-on talks to Home Assistant through the Supervisor (no token
-needed), finds the Mosquitto add-on's broker automatically, and shows its UI
-in the sidebar via ingress. See [addon/DOCS.md](addon/DOCS.md), which also
-covers installing it while this repo is private.
-
-### From source
+Needs Rust 1.85 or newer, plus `cmake` and `nasm` (to build the H.264 encoder).
 
 ```sh
-cargo run --release -- --setup-code 031-45-154 --ha-url http://homeassistant.local:8123 --ha-token ...
+cargo run --release -- --ha-url http://homeassistant.local:8123 --ha-token your-long-lived-token
 ```
 
-## Configuration
+## Pair with Apple Home
 
-| Flag | Env | Default | |
-| --- | --- | --- | --- |
-| `--name` | `HOMESTAT_NAME` | Homestat | Bridge name in Home |
-| `--port` | `HOMESTAT_PORT` | 51826 | HomeKit TCP port (Homebridge uses this too) |
-| `--api-port` | `HOMESTAT_API_PORT` | 8080 | Web UI and API |
-| `--api-allow` | `HOMESTAT_API_ALLOW` | anyone | Comma separated IPs allowed to use the UI/API (loopback always is) |
-| `--data-dir` | `HOMESTAT_DATA_DIR` | ./data (/data in Docker) | Keys, pairings, widgets |
-| `--setup-code` | `HOMESTAT_SETUP_CODE` | random | Used on first run only |
-| `--sample-interval` | `HOMESTAT_SAMPLE_INTERVAL` | 5 | Seconds between samples; sparklines show 120 |
-| `--ha-url`, `--ha-token` | `HOMESTAT_HA_URL`, `HOMESTAT_HA_TOKEN` | | Home Assistant + long-lived access token |
-| `--prometheus-url` | `HOMESTAT_PROMETHEUS_URL` | | Prometheus-compatible HTTP API |
-| `--mqtt-url` | `HOMESTAT_MQTT_URL` | | `mqtt://[user[:pass]@]host[:port]` (no TLS yet) |
+1. Open the web UI at `http://<host>:8080` (or the sidebar panel in Home Assistant).
+2. In the Home app tap **+ → Add Accessory** and scan the QR code shown in the
+   web UI, or enter the setup code.
+3. Tap **Add Anyway** when Home warns that the accessory isn't certified.
+4. Back in the web UI, click **Add widget**. A few seconds later the new
+   camera appears in Home.
 
-### Data sources in the web UI
+The pairing keys and widgets live in the data directory (`./data`, or
+`/data` in Docker). Back it up. If you lose it you'll need to remove the
+bridge from Home and pair again.
 
-Home Assistant, Prometheus and MQTT can also be set up in the web UI: click a
-source's name at the top of the page. **Test** checks the settings without
-saving them. **Save** applies them immediately, with no restart: widgets
-recover within one sample interval and MQTT reconnects. Settings are stored
-in `<data dir>/providers.json`, readable only by its owner because it holds
-the token and password, which the UI never shows again. A source set by a
-flag or environment variable (or by the add-on) wins over the UI and appears
-there as read-only.
+## Data sources
 
-## Widget sources
+Set sources with environment variables (below) or in the web UI by clicking
+a source's name at the top of the page. **Test** checks the settings and
+**Save** applies them straight away, no restart needed.
 
-| `source` | Fields | |
-| --- | --- | --- |
-| `homeassistant` | `entity_id`, `attribute`? | Numeric state or attribute; `on`/`off`-style states become 1/0; unit taken from the entity |
-| `prometheus` | `query` | Instant query that returns exactly one series (wrap in `sum()` etc.) |
-| `mqtt` | `topic`, `json_path`? | Topic filter (wildcards OK); number payload, or JSON picked with a dotted path like `temperature` or `values.0` |
-| `system` | `metric` | `cpu`, `memory`, `load`, `processes` of the machine homestat runs on |
-| `push` | | Values POSTed to the API |
-| `demo` | | Random walk |
+| Source | What a widget reads |
+| --- | --- |
+| Home Assistant | Any entity with a numeric state or attribute. `on`/`off`, `open`/`closed` and `home`/`not_home` become 1/0. |
+| Prometheus | A PromQL query that returns one series (wrap others in `sum()`, `max()`, ...). Works with VictoriaMetrics, Thanos and Mimir too. |
+| MQTT | A topic (wildcards allowed) with a number, or JSON picked with a path like `temperature` or `values.0`. |
+| System | CPU, memory, load or process count of the machine homestat runs on. |
+| Push | Values you POST to the API. |
+| Demo | A random walk, for trying things out. |
 
-Every widget samples at the same steady rate. Remote values are held between
-updates, which matters for MQTT sensors that publish rarely. Home Assistant
-and Prometheus widgets start with their recent history filled in. If a source
-fails (entity missing, broker down, bad query), the widget keeps its last
-value and shows the error in amber on the tile itself, so it's visible in
-Home.
+Home Assistant and Prometheus widgets start with their recent history filled
+in. If a source fails, the widget keeps its last value and shows the error on
+the tile itself.
+
+Want something to point it at? [examples/prometheus](examples/prometheus/README.md)
+starts a local Prometheus and adds one widget of each type.
 
 ## Widget types
 
-Set with `"style"`, or pick one in the widget dialog.
+| Type | Shows |
+| --- | --- |
+| Stat | Title, big value and sparkline |
+| Gauge | Semicircular dial (set `min` and `max`, default 0–100) |
+| Bar | Value over a progress bar (`min`/`max`, default 0–100) |
+| Graph | Chart with axis and gridlines, auto-scaled by default |
+| State | A word for the current value, such as *Open* or *Closed*, in its own colour |
 
-| Style | Shows | Options |
+Each widget can also have its own colours (with preset themes) and
+**thresholds** that recolour it when the value crosses a level, for example
+amber at 80 and red at 95. All of this is in the widget dialog.
+
+## Configuration
+
+Every option is a flag or an environment variable (`homestat --help`).
+
+| Env | Default | |
 | --- | --- | --- |
-| `stat` (default) | Title, big value, sparkline (Grafana singlestat) | |
-| `gauge` | Semicircular dial with the value in the middle | `min`, `max` (default 0–100) |
-| `bar` | Big value over a horizontal progress bar | `min`, `max` (default 0–100) |
-| `graph` | Full chart with y-axis and gridlines, current value top right | `min`, `max` (default: auto-scaled to the data, so 19–23 °C isn't a flat line) |
-| `state` | A word for the current value, in its colour on a tinted tile | `states`: `[{"value": 0, "label": "Closed", "color": "#34c759"}, ...]`; without states, 0/1 show as Off/On |
+| `HOMESTAT_NAME` | Homestat | Bridge name in Home |
+| `HOMESTAT_HA_URL`, `HOMESTAT_HA_TOKEN` | | Home Assistant URL and [long-lived access token](https://www.home-assistant.io/docs/authentication/#your-account-profile) |
+| `HOMESTAT_PROMETHEUS_URL` | | Prometheus HTTP API |
+| `HOMESTAT_MQTT_URL` | | `mqtt://[user[:pass]@]host[:port]` |
+| `HOMESTAT_PORT` | 51826 | HomeKit port. Change it if Homebridge already uses 51826. |
+| `HOMESTAT_API_PORT` | 8080 | Web UI and API port |
+| `HOMESTAT_API_ALLOW` | everyone | Comma-separated IPs allowed to use the web UI and API |
+| `HOMESTAT_DATA_DIR` | `./data` (`/data` in Docker) | Pairing keys and widgets |
+| `HOMESTAT_SETUP_CODE` | random | HomeKit setup code, `123-45-678`, used on first run only |
+| `HOMESTAT_SAMPLE_INTERVAL` | 5 | Seconds between samples. Sparklines show the last 120. |
+
+Sources set by an environment variable take priority and appear read-only in
+the web UI.
+
+## API
+
+Everything the web UI does is available over HTTP:
 
 ```sh
+# list widgets with their current values
+curl localhost:8080/api/widgets
+
+# add a widget
+curl -X POST localhost:8080/api/widgets -H 'content-type: application/json' -d '{
+  "name": "Solar", "unit": "kW",
+  "source": {"type": "homeassistant", "entity_id": "sensor.solar_power"}}'
+
+# a state widget with labels and colours
 curl -X POST localhost:8080/api/widgets -H 'content-type: application/json' -d '{
   "name": "Garage door", "style": "state",
   "source": {"type": "homeassistant", "entity_id": "binary_sensor.garage_door"},
   "states": [{"value": 0, "label": "Closed", "color": "#34c759"},
-             {"value": 1, "label": "Open", "color": "#ff453a"}]}'
-```
+             {"value": 1, "label": "Open",   "color": "#ff453a"}]}'
 
-Home Assistant's `on`/`off`, `open`/`closed` and `home`/`not_home` states
-arrive as 1/0, so they work with State widgets directly.
+# push a value to a widget with "source": {"type": "push"}
+curl -X POST localhost:8080/api/widgets/solar/value -H 'content-type: application/json' -d '{"value": 3.4}'
 
-## Appearance
-
-Each widget can set its own colours: `background`, `text` (title and
-value), `line` and `fill` (the sparkline), as `#rrggbb`. Unset ones use the
-default dark theme, an unset fill is a tint of the line colour, and the
-border follows the background. The widget dialog has preset themes, colour
-pickers and a live preview. Over the API:
-
-```sh
-curl -X PUT localhost:8080/api/widgets/solar -H 'content-type: application/json' -d '{
-  "name": "Solar", "unit": "kW", "source": {"type": "mqtt", "topic": "solar/power"},
-  "colors": {"background": "#f5f5f7", "text": "#1d1d1f", "line": "#0a84ff"}}'
-```
-
-Colour changes reach open camera views immediately, and the HomeKit name and
-room are kept.
-
-### Thresholds
-
-Stat, gauge, bar and graph widgets can change colour when the value reaches
-a level. The highest threshold reached recolours the big value and the
-line, gauge arc or bar. Gauges and bars also mark the zones along their
-scale, and graphs draw a dashed line at each level:
-
-```json
-"thresholds": [{"from": 80, "color": "#ff9f0a"}, {"from": 95, "color": "#ff453a"}]
-```
-
-Below the lowest threshold the widget uses its normal colours. In the widget
-dialog, use "Add threshold" (it suggests 80 and then 95).
-
-## Web UI and API
-
-The web UI (`http://<host>:8080`) handles HomeKit pairing (QR code and setup
-code, paired controllers and which are connected right now, and a reset that
-gives the bridge a fresh identity so it can be added again), shows live
-previews, and lets you add, edit and remove widgets. Editing keeps the camera's identity, so its room
-and settings in Home survive. The API underneath:
-
-```sh
-curl localhost:8080/api/widgets                       # list, with value + status
-curl -X POST localhost:8080/api/widgets -H 'content-type: application/json' \
-  -d '{"name": "Solar", "unit": "kW", "source": {"type": "homeassistant", "entity_id": "sensor.solar_power"}}'
-curl -X PUT localhost:8080/api/widgets/solar -H 'content-type: application/json' \
-  -d '{"name": "Solar", "decimals": 2, "source": {"type": "mqtt", "topic": "solar/power"}}'
-curl -X POST localhost:8080/api/widgets/solar/value -H 'content-type: application/json' -d '{"value": 3.4}'  # push sources
-curl -o w.png 'localhost:8080/api/widgets/solar/preview.png?width=1280&height=720'
+# edit (PUT the full widget), preview, delete
+curl -X PUT localhost:8080/api/widgets/solar -H 'content-type: application/json' -d '{...}'
+curl -o solar.png 'localhost:8080/api/widgets/solar/preview.png?width=1280&height=720'
 curl -X DELETE localhost:8080/api/widgets/solar
-curl localhost:8080/api/pairing                       # paired?, setup code, controllers + live connections
-curl -X POST localhost:8080/api/pairing/reset         # forget all controllers, new HomeKit identity
 ```
 
-The API has no authentication of its own. Keep it on a trusted network or
-restrict it with `--api-allow`. In the add-on, only Home Assistant's
-authenticated ingress can reach it by default.
+<details>
+<summary>Widget fields</summary>
 
-## Layout
+| Field | |
+| --- | --- |
+| `name`, `unit`, `decimals` | Label, unit suffix and decimal places |
+| `style` | `stat` (default), `gauge`, `bar`, `graph` or `state` |
+| `source` | `{"type": "homeassistant", "entity_id": "...", "attribute": "..."?}`, `{"type": "prometheus", "query": "..."}`, `{"type": "mqtt", "topic": "...", "json_path": "..."?}`, `{"type": "system", "metric": "cpu" \| "memory" \| "load" \| "processes"}`, `{"type": "push"}` or `{"type": "demo"}` |
+| `min`, `max` | Scale for gauge, bar and graph |
+| `states` | For `state`: `[{"value": 0, "label": "Closed", "color": "#34c759"}, ...]`. Without it, 0/1 show as Off/On. |
+| `colors` | `{"background", "text", "line", "fill"}` as `#rrggbb` |
+| `thresholds` | `[{"from": 80, "color": "#ff9f0a"}, {"from": 95, "color": "#ff453a"}]` |
+
+</details>
+
+## Security
+
+The web UI and API have **no login**. Anyone who can reach port 8080 can
+change widgets and source settings. Keep it on a trusted network or limit it
+with `HOMESTAT_API_ALLOW`. The Home Assistant add-on is only reachable through
+Home Assistant's own login by default.
+
+Saved tokens and passwords are stored in `<data dir>/providers.json`,
+readable only by its owner, and the UI never shows them again.
+
+## Limitations
+
+* HomeKit allows up to 150 accessories per bridge, so up to 149 widgets.
+* No MQTT over TLS yet.
+* Home Assistant is polled every sample interval rather than subscribed to.
+* Stat sparklines start at zero, which flattens values like temperatures. Use
+  the graph type for those.
+
+## Troubleshooting
+
+* **The bridge doesn't show up in Home.** Make sure homestat uses host
+  networking and runs on the same network (and VLAN) as your Apple devices,
+  since discovery uses mDNS.
+* **Camera shows "No response".** Run with `RUST_LOG=homestat=debug` and
+  watch the `stream stats` lines for send errors.
+* **Pair from scratch.** Click **Reset pairing…** in the web UI (your widgets
+  are kept), remove the old bridge in Home under **Home Settings → Hubs &
+  Bridges**, then add it again.
+
+## Development
+
+```sh
+cargo test
+```
+
+`tools/e2e_check.py` acts as a HomeKit controller and checks a running server
+end to end against independent implementations (aiohomekit, libsrtp, ffmpeg).
+Its docstring has setup instructions.
 
 | Path | What |
 | --- | --- |
-| `src/hap/` | HomeKit Accessory Protocol: TLV8, SRP-6a, ChaCha20-Poly1305 sessions, pairing, accessory DB, HTTP server, mDNS |
-| `src/camera/` | Stream negotiation (SetupEndpoints / SelectedRTPStreamConfiguration), RTP H.264 packetizer, SRTP, encode loop |
-| `src/widgets/` | Widget model, renderer, sampler, remote sources (HA/Prometheus/MQTT) |
-| `src/hub.rs` | Shared state; dynamic widget add/edit/remove → config number bump |
+| `src/hap/` | HomeKit Accessory Protocol: pairing (SRP), encrypted sessions, accessory database, mDNS |
+| `src/camera/` | Stream setup, RTP H.264 packetizing, SRTP |
+| `src/widgets/` | Widget model, sources and renderers (`render/`, one module per type) |
 | `src/api.rs`, `src/ui.html` | Web UI and API |
-| `src/addon.rs` | Home Assistant add-on mode (options, Supervisor MQTT discovery) |
-| `addon/` | Home Assistant add-on definition |
-| `tools/e2e_check.py` | Acts as a HomeKit controller to test a running server end to end |
+| `addon/` | Home Assistant add-on |
 
-## Testing
+CI runs the tests and publishes a multi-arch (amd64/arm64) image to
+`ghcr.io/nathan-jones/homestat`: `:edge` from `main`, and `:<version>` plus
+`:latest` from `v*` tags.
 
-```sh
-cargo test   # TLV, SRP, SRTP (RFC 3711 vectors), RTP packetization, rendering, source parsing
-```
+## License
 
-`tools/e2e_check.py` pairs with a fresh server and checks every layer against
-an independent implementation:
-
-* aiohomekit (Home Assistant's HomeKit client) for pairing
-* `cryptography` for session encryption
-* libsrtp for SRTP
-* ffmpeg (via PyAV) for H.264 decoding
-
-The script's docstring has setup instructions.
-
-CI (`.github/workflows/ci.yml`) runs the tests and publishes a multi-arch
-(amd64/arm64) image to `ghcr.io/<owner>/homestat`: `:edge` from main, and
-`:<version>` and `:latest` from `v*` tags. The add-on's `version` must match a
-published tag.
-
-## Known gaps / next steps
-
-* **Tested against a real home (Apple TV/HomePod hubs + iPhone).** Pairing,
-  snapshots and live streams work, including several cameras at once. Two
-  lessons from that: HomeKit ignores cameras that lack a Microphone service,
-  and controllers connect over IPv6 too, so the server listens dual-stack.
-  To debug a stream, run with `RUST_LOG=homestat=debug`. The periodic
-  `stream stats` line shows send errors and how many RTCP reports came
-  back from the controller.
-* No MQTT over TLS yet, and Home Assistant is polled rather than subscribed
-  to over its websocket.
-* Stat sparklines are zero-based like Grafana's, which flattens values that
-  sit far from zero (e.g. temperatures). Use the graph type for those.
-* No audio. A configuration is advertised but no audio is sent.
-* No event notifications (subscriptions are accepted but nothing is pushed).
-  Not needed for cameras.
-* Possible next steps: multi-series graphs, widget config file
-  (YAML) for GitOps setups, doorbell-style alerts on thresholds.
-
-Fonts: Open Sans (SIL OFL, `assets/fonts/OFL.txt`).
+[MIT](LICENSE). Includes Open Sans, under the SIL Open Font License
+([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).

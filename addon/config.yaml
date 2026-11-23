@@ -7,7 +7,7 @@ arch:
   - aarch64
   - amd64
 # Prebuilt multi-arch image from CI. Delete this line to build locally from
-# the Dockerfile instead (see DOCS.md, "Installing from a private copy").
+# the Dockerfile instead (see DOCS.md, "Building from source").
 image: ghcr.io/nathan-jones/homestat
 init: false
 startup: application

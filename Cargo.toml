@@ -2,6 +2,13 @@
 name = "homestat"
 version = "0.2.0"
 edition = "2024"
+description = "Home Assistant, Prometheus and MQTT stats as Apple Home camera tiles"
+license = "MIT"
+repository = "https://github.com/nathan-jones/homestat"
+readme = "README.md"
+keywords = ["homekit", "home-assistant", "prometheus", "mqtt", "homelab"]
+categories = ["command-line-utilities"]
+publish = false
 
 [dependencies]
 ab_glyph = "0.2.32"

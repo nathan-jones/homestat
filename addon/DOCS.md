@@ -5,6 +5,11 @@ dashboard tiles (title, big value, sparkline) and shows each one as a
 **camera** in the Apple Home app, so they appear on your iPhone, iPad, Mac and
 Apple TV.
 
+## Installation
+
+1. **Settings → Add-ons → Add-on store → ⋮ → Repositories**, add
+   `https://github.com/nathan-jones/homestat`, then install **Homestat**.
+
 ## Setup
 
 1. Start the add-on and open **Homestat** in the sidebar.
@@ -54,12 +59,11 @@ your widgets are kept. Then in the Home app remove the old, now unresponsive
 bridge (**Home Settings → Hubs & Bridges → Homestat → Remove Bridge**) and add
 it again with the new QR code.
 
-## Installing from a private copy
+## Building from source
 
-While the repository is private, Home Assistant can't add it as an add-on
-repository. Instead, copy this `addon` folder to `/addons/homestat` on your
-Home Assistant host (Samba or SSH add-on), then **Settings → Add-ons → Add-on
-store → ⋮ → Check for updates**, and install Homestat from *Local add-ons*.
-This pulls the prebuilt image, which requires its GHCR package to be public.
-Run `addon/make-local.sh` to produce a folder that builds from source instead
-(slow on a Raspberry Pi: expect 20+ minutes).
+The add-on normally pulls a prebuilt image. To build it on your Home
+Assistant host instead, run `addon/make-local.sh` from a checkout of the
+repository, copy the resulting `dist/homestat` folder to `/addons/homestat`
+on the host (Samba or SSH add-on), then **Settings → Add-ons → Add-on store
+→ ⋮ → Check for updates** and install Homestat from *Local add-ons*. Expect
+20+ minutes on a Raspberry Pi.
