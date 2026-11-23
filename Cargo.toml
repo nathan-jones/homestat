@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 ab_glyph = "0.2.32"
-aes = "0.8"
+aes = "0.9"
 anyhow = "1.0.104"
 axum = "0.8"
 base64 = "0.22"
