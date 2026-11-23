@@ -15,7 +15,7 @@ ab_glyph = "0.2.32"
 aes = "0.9"
 anyhow = "1.0.104"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 chacha20poly1305 = "0.11"
 clap = { version = "4.6.9", features = ["derive", "env"] }
 ctr = "0.10"
